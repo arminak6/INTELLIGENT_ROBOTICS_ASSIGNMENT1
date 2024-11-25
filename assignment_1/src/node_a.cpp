@@ -13,39 +13,31 @@ void feedbackCallback(const std_msgs::String::ConstPtr& msg) {
 
 int main(int argc, char **argv) {
 
+    // Initialize the ROS node
     ros::init(argc, argv, "node_a");
     ros::NodeHandle nh;
 
+    // Wait for the service to be available
+    ros::service::waitForService("apriltag_ids_srv");
 
-    ros::ServiceClient client = nh.serviceClient<assignment_1::ApriltagsIdS>("/apriltags_ids_srv");
+    // Create a service client
+    ros::ServiceClient client = nh.serviceClient<assignment_1::ApriltagsIdS>("apriltag_ids_srv");
 
+    // Prepare the service request and response
+    assignment_1::ApriltagsIdS srv;
+    srv.request.ready = true;
 
-    ids_publisher = nh.advertise<std_msgs::Int32MultiArray>("apriltags_ids", 10);
-
-
-    ros::Subscriber feedback_subscriber = nh.subscribe("node_b_feedback", 10, feedbackCallback);
-
-
-    ROS_INFO("[Node A] Requesting IDs from server...");
-    assignment_1::ApriltagsIdS srv; 
+    // Call the service
     if (client.call(srv)) {
-        ROS_INFO("[Node A] Received IDs:");
-        std_msgs::Int32MultiArray ids_msg;
-
-        for (const auto& id : srv.response.ids) {
-            ROS_INFO("  - %d", id);
-            ids_msg.data.push_back(id);
+        // Log the response
+        ROS_INFO("Received IDs:");
+        for (int id : srv.response.ids) {
+            ROS_INFO("%d", id);
         }
-
-
-        ROS_INFO("[Node A] Sending IDs to Node B...");
-        ids_publisher.publish(ids_msg);
     } else {
-        ROS_ERROR("[Node A] Failed to call service /apriltags_ids_srv");
+        ROS_ERROR("Failed to call service apriltag_ids_srv");
         return 1;
     }
-
-    ros::spin();
 
     return 0;
 }
