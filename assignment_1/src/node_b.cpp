@@ -45,6 +45,7 @@ private:
     std::vector<geometry_msgs::PoseStamped> detected_cubes; // List of detected cubes in map frame
     std::vector<geometry_msgs::PoseStamped> navigation_goals; // Predefined navigation goals
     size_t current_goal_index = 0;  // Index for tracking the current navigation goal
+    bool goal_active = false;  // Flag to track if a goal is currently active
 
     void targetIdsCallback(const std_msgs::Int32MultiArray::ConstPtr& ids_msg) {
         received_tags.clear();
@@ -58,8 +59,6 @@ private:
 
     void tagDetectionsCallback(const apriltag_ros::AprilTagDetectionArray::ConstPtr& detections_msg) {
         if (detections_msg->detections.empty()) {
-            ROS_INFO("No AprilTags detected.");
-            publishFeedback("Scanning environment...");
             return;
         }
 
@@ -77,13 +76,21 @@ private:
                 geometry_msgs::PoseStamped tag_pose_in_map = transformPose(tag_pose_in_camera, "map");
                 if (!tag_pose_in_map.header.frame_id.empty()) {
                     detected_cubes.push_back(tag_pose_in_map);
+
+                    // Cancel the current goal if active
+                    if (goal_active) {
+                        ROS_INFO("[Node B] Canceling current goal to process tag.");
+                        action_client.cancelGoal();
+                        goal_active = false;
+                    }
                 }
 
                 // Check if all target IDs are found
                 if (detected_cubes.size() == received_tags.size()) {
                     ROS_INFO("All target tags detected. Task complete.");
                     sendCubePositionsToNodeA();
-                    ros::shutdown();  // Stop the node
+                    publishFeedback("Task complete. Shutting down.");
+                    ros::shutdown();
                 }
             }
         }
@@ -102,17 +109,16 @@ private:
     }
 
     void defineNavigationGoals() {
-        // Example goals for the two rooms
         geometry_msgs::PoseStamped goal1, goal2;
 
         goal1.header.frame_id = "map";
         goal1.pose.position.x = 2.0;
-        goal1.pose.position.y = 1.0;
+        goal1.pose.position.y = 2.0;
         goal1.pose.orientation.w = 1.0;
 
         goal2.header.frame_id = "map";
-        goal2.pose.position.x = 12.0;
-        goal2.pose.position.y = 1.0;
+        goal2.pose.position.x = -2.0;
+        goal2.pose.position.y = -2.0;
         goal2.pose.orientation.w = 1.0;
 
         navigation_goals.push_back(goal1);
@@ -122,8 +128,10 @@ private:
     void startNavigation() {
         ROS_INFO("Starting navigation...");
         while (current_goal_index < navigation_goals.size() && ros::ok()) {
-            sendNextGoal(navigation_goals[current_goal_index]);
-            ros::spinOnce();  // Process callbacks for tag detection
+            if (!goal_active) {
+                sendNextGoal(navigation_goals[current_goal_index]);
+            }
+            ros::spinOnce();  // Continuously process tag detections
         }
     }
 
@@ -131,25 +139,24 @@ private:
         move_base_msgs::MoveBaseGoal goal;
         goal.target_pose = goal_pose;
 
-        ROS_INFO("Sending goal: (x: %f, y: %f)", goal_pose.pose.position.x, goal_pose.pose.position.y);
-        publishFeedback("Navigating to goal at (x: " + std::to_string(goal_pose.pose.position.x) +
-                        ", y: " + std::to_string(goal_pose.pose.position.y) + ").");
+        ROS_INFO("[Node B] Sending goal to (x: %f, y: %f)", goal_pose.pose.position.x, goal_pose.pose.position.y);
+        publishFeedback("Navigating to goal...");
+        goal_active = true;
 
         action_client.sendGoal(goal,
             boost::bind(&NodeB::doneCallback, this, _1, _2),
             boost::bind(&NodeB::activeCallback, this),
             boost::bind(&NodeB::feedbackCallback, this, _1));
-
-        action_client.waitForResult();
     }
 
     void doneCallback(const actionlib::SimpleClientGoalState& state,
                       const move_base_msgs::MoveBaseResult::ConstPtr& result) {
+        goal_active = false;
         if (state == actionlib::SimpleClientGoalState::SUCCEEDED) {
-            ROS_INFO("Goal reached successfully.");
+            ROS_INFO("[Node B] Reached goal successfully.");
             current_goal_index++;
         } else {
-            ROS_WARN("Failed to reach goal. Retrying...");
+            ROS_WARN("[Node B] Failed to reach goal. Retrying...");
         }
     }
 
@@ -161,12 +168,6 @@ private:
         ROS_INFO("[Node B] Feedback: Current position (x: %f, y: %f)",
                  feedback->base_position.pose.position.x,
                  feedback->base_position.pose.position.y);
-    }
-
-    void publishFeedback(const std::string& message) {
-        std_msgs::String feedback_msg;
-        feedback_msg.data = message;
-        feedback_publisher.publish(feedback_msg);
     }
 
     void sendCubePositionsToNodeA() {
@@ -182,6 +183,12 @@ private:
 
         cube_positions_publisher.publish(cube_positions);
         publishFeedback("Task complete. All cube positions sent to Node A.");
+    }
+
+    void publishFeedback(const std::string& message) {
+        std_msgs::String feedback_msg;
+        feedback_msg.data = message;
+        feedback_publisher.publish(feedback_msg);
     }
 };
 
