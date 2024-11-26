@@ -1,7 +1,7 @@
 #include "ros/ros.h"
 #include "std_msgs/String.h"
 #include "std_msgs/Int32MultiArray.h"
-#include "assignment_1/ApriltagsIdS.h" 
+#include "assignment_1/ApriltagsIdS.h"
 
 // Publisher for sending apriltag IDs to Node B
 ros::Publisher ids_publisher;
@@ -17,7 +17,11 @@ int main(int argc, char **argv) {
     ros::NodeHandle nh;
 
     // Wait for the apriltag service to be available
-    ros::service::waitForService("apriltag_ids_srv");
+    ROS_INFO("[Node A] Waiting for service apriltag_ids_srv...");
+    if (!ros::service::waitForService("apriltag_ids_srv", ros::Duration(10.0))) {
+        ROS_ERROR("[Node A] Service apriltag_ids_srv not available.");
+        return 1;
+    }
 
     // Create a service client to request apriltag IDs
     ros::ServiceClient client = nh.serviceClient<assignment_1::ApriltagsIdS>("apriltag_ids_srv");
@@ -44,10 +48,14 @@ int main(int argc, char **argv) {
         }
 
         // Publish the IDs
-        ids_publisher.publish(ids_msg);
-        ROS_INFO("[Node A] Published IDs to Node B.");
+        ros::Rate loop_rate(1); // 1 Hz
+        for (int i = 0; i < 5; ++i) { // Publish multiple times to ensure Node B gets the message
+            ids_publisher.publish(ids_msg);
+            ROS_INFO("[Node A] Published IDs to Node B (attempt %d).", i + 1);
+            loop_rate.sleep();
+        }
     } else {
-        ROS_ERROR("[Node A] Failed to call service apriltag_ids_srv");
+        ROS_ERROR("[Node A] Failed to call service apriltag_ids_srv.");
         return 1;
     }
 
@@ -56,3 +64,4 @@ int main(int argc, char **argv) {
 
     return 0;
 }
+
