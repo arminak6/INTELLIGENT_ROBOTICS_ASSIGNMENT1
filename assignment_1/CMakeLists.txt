@@ -57,17 +57,18 @@ find_package(catkin REQUIRED COMPONENTS
 ##   * add every package in MSG_DEP_SET to generate_messages(DEPENDENCIES ...)
 
 ## Generate messages in the 'msg' folder
-# add_message_files(
-#   FILES
+ add_message_files(
+   FILES
+TaskStatus.msg
 #   Message1.msg
 #   Message2.msg
-# )
+ )
 
 ## Generate services in the 'srv' folder
  add_service_files(
    FILES
    ApriltagsIdS.srv
-#   Service2.srv
+   SendCubePositions.srv
  )
 
 ## Generate actions in the 'action' folder
@@ -81,6 +82,7 @@ find_package(catkin REQUIRED COMPONENTS
 generate_messages(
    DEPENDENCIES
    std_msgs
+   geometry_msgs
 )
 
 ################################################
@@ -116,7 +118,7 @@ catkin_package(
 #  INCLUDE_DIRS include
 #  LIBRARIES assignment_1
 #  CATKIN_DEPENDS roscpp std_msgs
-  CATKIN_DEPENDS roscpp std_msgs tf2 tf2_ros cv_bridge image_transport message_runtime
+  CATKIN_DEPENDS roscpp std_msgs tf2 tf2_ros cv_bridge image_transport message_runtime geometry_msgs
 #  DEPENDS system_lib
 
   
