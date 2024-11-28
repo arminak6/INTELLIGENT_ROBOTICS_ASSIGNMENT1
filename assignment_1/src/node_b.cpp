@@ -10,6 +10,8 @@
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 #include <vector>
 #include <algorithm>
+#include <tf/transform_datatypes.h>
+
 
 // Type alias for convenience
 typedef actionlib::SimpleActionClient<move_base_msgs::MoveBaseAction> MoveBaseClient;
@@ -108,22 +110,36 @@ private:
         return output_pose;
     }
 
-    void defineNavigationGoals() {
-        geometry_msgs::PoseStamped goal1, goal2;
+	void defineNavigationGoals() {
+		// Goal 1: Enter the first room
+		geometry_msgs::PoseStamped goal1;
+		goal1.header.frame_id = "map";  // Reference frame for navigation
+		goal1.header.stamp = ros::Time::now();
+		goal1.pose.position.x = 5.0;
+		goal1.pose.position.y = 0.0;
+		goal1.pose.orientation.w = 1.0;
 
-        goal1.header.frame_id = "map";
-        goal1.pose.position.x = 2.0;
-        goal1.pose.position.y = 2.0;
-        goal1.pose.orientation.w = 1.0;
+		// Goal 2: First door
+		geometry_msgs::PoseStamped goal2 = goal1;
+		goal2.pose.position.x = 10.5;
+		goal2.pose.position.y = -3.7;
 
-        goal2.header.frame_id = "map";
-        goal2.pose.position.x = -2.0;
-        goal2.pose.position.y = -2.0;
-        goal2.pose.orientation.w = 1.0;
+		// Goal 3: Second door
+		geometry_msgs::PoseStamped goal3 = goal1;
+		goal3.pose.position.x = 9.6;
+		goal3.pose.position.y = 0.7;
 
-        navigation_goals.push_back(goal1);
-        navigation_goals.push_back(goal2);
-    }
+		// Define a yaw of 180 degrees (converted to radians) for orientation
+		double yaw = M_PI;  // 180 degrees in radians
+		geometry_msgs::Quaternion quaternion = tf::createQuaternionMsgFromYaw(yaw);
+		goal3.pose.orientation = quaternion;
+
+		// Add the goals to the navigation goals vector
+		navigation_goals.push_back(goal1);
+		navigation_goals.push_back(goal2);
+		navigation_goals.push_back(goal3);
+	}
+
 
     void startNavigation() {
         ROS_INFO("Starting navigation...");
