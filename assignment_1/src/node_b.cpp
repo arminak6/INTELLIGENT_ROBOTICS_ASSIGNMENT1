@@ -11,9 +11,8 @@
 #include <vector>
 #include <algorithm>
 #include <tf/transform_datatypes.h>
+#include "assignment_1/SendCubePositions.h"  // Replace 'assignment_1' with your package name
 
-
-// Type alias for convenience
 typedef actionlib::SimpleActionClient<move_base_msgs::MoveBaseAction> MoveBaseClient;
 
 class NodeB {
@@ -24,6 +23,9 @@ public:
         target_ids_subscriber = nh.subscribe("/apriltag_ids_topic", 10, &NodeB::targetIdsCallback, this);
         feedback_publisher = nh.advertise<std_msgs::String>("/node_b/feedback", 10);
         cube_positions_publisher = nh.advertise<geometry_msgs::PoseArray>("/node_b/cube_positions", 10);
+
+        // Initialize service client
+        send_positions_client = nh.serviceClient<assignment_1::SendCubePositions>("/node_a/send_cube_positions");
 
         ROS_INFO("Waiting for move_base action server...");
         action_client.waitForServer();
@@ -39,15 +41,18 @@ private:
     ros::Subscriber target_ids_subscriber;
     ros::Publisher feedback_publisher;
     ros::Publisher cube_positions_publisher;
+    ros::ServiceClient send_positions_client;
+
     tf2_ros::Buffer tf_buffer;
     tf2_ros::TransformListener tf_listener;
     MoveBaseClient action_client;
 
-    std::vector<int> received_tags;  // List of target AprilTag IDs received from Node A
-    std::vector<geometry_msgs::PoseStamped> detected_cubes; // List of detected cubes in map frame
-    std::vector<geometry_msgs::PoseStamped> navigation_goals; // Predefined navigation goals
-    size_t current_goal_index = 0;  // Index for tracking the current navigation goal
-    bool goal_active = false;  // Flag to track if a goal is currently active
+    std::vector<int> received_tags;
+    std::vector<geometry_msgs::PoseStamped> detected_cubes;
+    std::vector<geometry_msgs::PoseStamped> navigation_goals;
+
+    size_t current_goal_index = 0;
+    bool goal_active = false;
 
     void targetIdsCallback(const std_msgs::Int32MultiArray::ConstPtr& ids_msg) {
         received_tags.clear();
@@ -59,44 +64,55 @@ private:
         ROS_INFO("[Node B] Stored %lu tags from Node A.", received_tags.size());
     }
 
-    void tagDetectionsCallback(const apriltag_ros::AprilTagDetectionArray::ConstPtr& detections_msg) {
-        if (detections_msg->detections.empty()) {
-            return;
-        }
 
-        for (const auto& detection : detections_msg->detections) {
-            int tag_id = detection.id[0];
+	void tagDetectionsCallback(const apriltag_ros::AprilTagDetectionArray::ConstPtr& detections_msg) {
+		if (detections_msg->detections.empty()) {
+		    ROS_INFO_THROTTLE(1, "[Node B] No tags detected.");
+		    return;
+		}
 
-            if (std::find(received_tags.begin(), received_tags.end(), tag_id) != received_tags.end()) {
-                ROS_INFO("[Node B] Detected target Apriltag ID: %d", tag_id);
-                publishFeedback("Detected and processing tag ID: " + std::to_string(tag_id));
+		for (const auto& detection : detections_msg->detections) {
+		    int tag_id = detection.id[0];
 
-                geometry_msgs::PoseStamped tag_pose_in_camera;
-                tag_pose_in_camera.header = detection.pose.header;
-                tag_pose_in_camera.pose = detection.pose.pose.pose;
+		    if (std::find(received_tags.begin(), received_tags.end(), tag_id) != received_tags.end()) {
+		        ROS_INFO("[Node B] Detected target Apriltag ID: %d", tag_id);
 
-                geometry_msgs::PoseStamped tag_pose_in_map = transformPose(tag_pose_in_camera, "map");
-                if (!tag_pose_in_map.header.frame_id.empty()) {
-                    detected_cubes.push_back(tag_pose_in_map);
+		        geometry_msgs::PoseStamped tag_pose_in_camera;
+		        tag_pose_in_camera.header = detection.pose.header;
+		        tag_pose_in_camera.pose = detection.pose.pose.pose;
 
-                    // Cancel the current goal if active
-                    if (goal_active) {
-                        ROS_INFO("[Node B] Canceling current goal to process tag.");
-                        action_client.cancelGoal();
-                        goal_active = false;
-                    }
-                }
+		        // Ensure the tag is on the floor by checking the z-coordinate
+		        if (tag_pose_in_camera.pose.position.z > 0.2) {
+		            ROS_WARN("[Node B] Detected tag is above the floor. Ignoring.");
+		            continue;
+		        }
 
-                // Check if all target IDs are found
-                if (detected_cubes.size() == received_tags.size()) {
-                    ROS_INFO("All target tags detected. Task complete.");
-                    sendCubePositionsToNodeA();
-                    publishFeedback("Task complete. Shutting down.");
-                    ros::shutdown();
-                }
-            }
-        }
-    }
+		        geometry_msgs::PoseStamped tag_pose_in_map = transformPose(tag_pose_in_camera, "map");
+		        if (!tag_pose_in_map.header.frame_id.empty()) {
+		            detected_cubes.push_back(tag_pose_in_map);
+		            ROS_INFO("[Node B] Transformed pose to map frame: (x: %f, y: %f, z: %f)",
+		                     tag_pose_in_map.pose.position.x,
+		                     tag_pose_in_map.pose.position.y,
+		                     tag_pose_in_map.pose.position.z);
+		        }
+
+		        // Cancel the current goal to prioritize detection
+		        if (goal_active) {
+		            action_client.cancelGoal();
+		            goal_active = false;
+		        }
+
+		        // Check if all target IDs are found
+		        if (detected_cubes.size() == received_tags.size()) {
+		            ROS_INFO("[Node B] All target tags detected. Task complete.");
+		            sendCubePositionsToNodeA();
+		            publishFeedback("Task complete. Shutting down.");
+		            ros::shutdown();
+		        }
+		    }
+		}
+	}
+
 
     geometry_msgs::PoseStamped transformPose(const geometry_msgs::PoseStamped& input_pose, const std::string& target_frame) {
         geometry_msgs::PoseStamped output_pose;
@@ -110,36 +126,30 @@ private:
         return output_pose;
     }
 
-	void defineNavigationGoals() {
-		// Goal 1: Enter the first room
-		geometry_msgs::PoseStamped goal1;
-		goal1.header.frame_id = "map";  // Reference frame for navigation
-		goal1.header.stamp = ros::Time::now();
-		goal1.pose.position.x = 5.0;
-		goal1.pose.position.y = 0.0;
-		goal1.pose.orientation.w = 1.0;
+    void defineNavigationGoals() {
+        geometry_msgs::PoseStamped goal1;
+        goal1.header.frame_id = "map";
+        goal1.header.stamp = ros::Time::now();
+        goal1.pose.position.x = 5.0;
+        goal1.pose.position.y = 0.0;
+        goal1.pose.orientation.w = 1.0;
 
-		// Goal 2: First door
-		geometry_msgs::PoseStamped goal2 = goal1;
-		goal2.pose.position.x = 10.5;
-		goal2.pose.position.y = -3.7;
+        geometry_msgs::PoseStamped goal2 = goal1;
+        goal2.pose.position.x = 10.5;
+        goal2.pose.position.y = -3.7;
 
-		// Goal 3: Second door
-		geometry_msgs::PoseStamped goal3 = goal1;
-		goal3.pose.position.x = 9.6;
-		goal3.pose.position.y = 0.7;
+        geometry_msgs::PoseStamped goal3 = goal1;
+        goal3.pose.position.x = 9.6;
+        goal3.pose.position.y = 0.7;
 
-		// Define a yaw of 180 degrees (converted to radians) for orientation
-		double yaw = M_PI;  // 180 degrees in radians
-		geometry_msgs::Quaternion quaternion = tf::createQuaternionMsgFromYaw(yaw);
-		goal3.pose.orientation = quaternion;
+        double yaw = M_PI;
+        geometry_msgs::Quaternion quaternion = tf::createQuaternionMsgFromYaw(yaw);
+        goal3.pose.orientation = quaternion;
 
-		// Add the goals to the navigation goals vector
-		navigation_goals.push_back(goal1);
-		navigation_goals.push_back(goal2);
-		navigation_goals.push_back(goal3);
-	}
-
+        navigation_goals.push_back(goal1);
+        navigation_goals.push_back(goal2);
+        navigation_goals.push_back(goal3);
+    }
 
     void startNavigation() {
         ROS_INFO("Starting navigation...");
@@ -147,7 +157,7 @@ private:
             if (!goal_active) {
                 sendNextGoal(navigation_goals[current_goal_index]);
             }
-            ros::spinOnce();  // Continuously process tag detections
+            ros::spinOnce();
         }
     }
 
@@ -187,7 +197,7 @@ private:
     }
 
     void sendCubePositionsToNodeA() {
-        ROS_INFO("Sending cube positions to Node A...");
+        assignment_1::SendCubePositions srv;
         geometry_msgs::PoseArray cube_positions;
         cube_positions.header.frame_id = "map";
         cube_positions.header.stamp = ros::Time::now();
@@ -197,8 +207,17 @@ private:
             ROS_INFO("Cube at (x: %f, y: %f)", cube_pose.pose.position.x, cube_pose.pose.position.y);
         }
 
-        cube_positions_publisher.publish(cube_positions);
-        publishFeedback("Task complete. All cube positions sent to Node A.");
+        srv.request.positions = cube_positions;
+
+        if (send_positions_client.call(srv)) {
+            if (srv.response.success) {
+                ROS_INFO("Cube positions successfully sent to Node A.");
+            } else {
+                ROS_WARN("Node A failed to process cube positions.");
+            }
+        } else {
+            ROS_ERROR("Failed to call service /node_a/send_cube_positions.");
+        }
     }
 
     void publishFeedback(const std::string& message) {
