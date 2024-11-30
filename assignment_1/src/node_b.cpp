@@ -12,17 +12,25 @@
 #include <algorithm>
 #include <tf/transform_datatypes.h>
 #include "assignment_1/SendCubePositions.h"  // Replace 'assignment_1' with your package name
+#include <sensor_msgs/Image.h>
+#include <cv_bridge/cv_bridge.h>
+#include <opencv2/opencv.hpp>
+#include <image_transport/image_transport.h>
 
 typedef actionlib::SimpleActionClient<move_base_msgs::MoveBaseAction> MoveBaseClient;
 
 class NodeB {
 public:
-    NodeB(ros::NodeHandle& nh) : action_client("move_base", true), tf_listener(tf_buffer) {
+    NodeB(ros::NodeHandle& nh) : action_client("move_base", true), tf_listener(tf_buffer), it(nh) {
         // Initialize subscribers and publishers
         tag_detections_subscriber = nh.subscribe("/tag_detections", 10, &NodeB::tagDetectionsCallback, this);
         target_ids_subscriber = nh.subscribe("/apriltag_ids_topic", 10, &NodeB::targetIdsCallback, this);
         feedback_publisher = nh.advertise<std_msgs::String>("/node_b/feedback", 10);
         cube_positions_publisher = nh.advertise<geometry_msgs::PoseArray>("/node_b/cube_positions", 10);
+
+        // Subscribe to RGB-D data
+        rgb_image_subscriber = it.subscribe("/xtion/rgb/image_raw", 10, &NodeB::rgbImageCallback, this);
+        depth_image_subscriber = it.subscribe("/xtion/depth/image_raw", 10, &NodeB::depthImageCallback, this);
 
         // Initialize service client
         send_positions_client = nh.serviceClient<assignment_1::SendCubePositions>("/node_a/send_cube_positions");
@@ -42,6 +50,12 @@ private:
     ros::Publisher feedback_publisher;
     ros::Publisher cube_positions_publisher;
     ros::ServiceClient send_positions_client;
+
+    image_transport::ImageTransport it;
+    image_transport::Subscriber rgb_image_subscriber;
+    image_transport::Subscriber depth_image_subscriber;
+    cv::Mat latest_rgb_image;
+    cv::Mat latest_depth_image;
 
     tf2_ros::Buffer tf_buffer;
     tf2_ros::TransformListener tf_listener;
@@ -64,55 +78,82 @@ private:
         ROS_INFO("[Node B] Stored %lu tags from Node A.", received_tags.size());
     }
 
+    void rgbImageCallback(const sensor_msgs::ImageConstPtr& msg) {
+        try {
+            latest_rgb_image = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8)->image;
+            ROS_INFO("[Node B] Received RGB image.");
+        } catch (cv_bridge::Exception& e) {
+            ROS_ERROR("cv_bridge exception: %s", e.what());
+        }
+    }
 
-	void tagDetectionsCallback(const apriltag_ros::AprilTagDetectionArray::ConstPtr& detections_msg) {
-		if (detections_msg->detections.empty()) {
-		    ROS_INFO_THROTTLE(1, "[Node B] No tags detected.");
-		    return;
-		}
+    void depthImageCallback(const sensor_msgs::ImageConstPtr& msg) {
+        try {
+            latest_depth_image = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::TYPE_16UC1)->image;
+            ROS_INFO("[Node B] Received depth image.");
+        } catch (cv_bridge::Exception& e) {
+            ROS_ERROR("cv_bridge exception: %s", e.what());
+        }
+    }
 
-		for (const auto& detection : detections_msg->detections) {
-		    int tag_id = detection.id[0];
+    void tagDetectionsCallback(const apriltag_ros::AprilTagDetectionArray::ConstPtr& detections_msg) {
+        if (detections_msg->detections.empty()) {
+            ROS_INFO_THROTTLE(1, "[Node B] No tags detected.");
+            publishFeedback("The robot is scanning.");
+            return;
+        }
 
-		    if (std::find(received_tags.begin(), received_tags.end(), tag_id) != received_tags.end()) {
-		        ROS_INFO("[Node B] Detected target Apriltag ID: %d", tag_id);
+        for (const auto& detection : detections_msg->detections) {
+            int tag_id = detection.id[0];
 
-		        geometry_msgs::PoseStamped tag_pose_in_camera;
-		        tag_pose_in_camera.header = detection.pose.header;
-		        tag_pose_in_camera.pose = detection.pose.pose.pose;
+            if (std::find(received_tags.begin(), received_tags.end(), tag_id) != received_tags.end()) {
+                ROS_INFO("[Node B] Detected target Apriltag ID: %d", tag_id);
 
-		        // Ensure the tag is on the floor by checking the z-coordinate
-		        if (tag_pose_in_camera.pose.position.z > 0.2) {
-		            ROS_WARN("[Node B] Detected tag is above the floor. Ignoring.");
-		            continue;
-		        }
+                geometry_msgs::PoseStamped tag_pose_in_camera;
+                tag_pose_in_camera.header = detection.pose.header;
+                tag_pose_in_camera.pose = detection.pose.pose.pose;
 
-		        geometry_msgs::PoseStamped tag_pose_in_map = transformPose(tag_pose_in_camera, "map");
-		        if (!tag_pose_in_map.header.frame_id.empty()) {
-		            detected_cubes.push_back(tag_pose_in_map);
-		            ROS_INFO("[Node B] Transformed pose to map frame: (x: %f, y: %f, z: %f)",
-		                     tag_pose_in_map.pose.position.x,
-		                     tag_pose_in_map.pose.position.y,
-		                     tag_pose_in_map.pose.position.z);
-		        }
+                int u = static_cast<int>(tag_pose_in_camera.pose.position.x * 100);
+                int v = static_cast<int>(tag_pose_in_camera.pose.position.y * 100);
+                if (u >= 0 && v >= 0 && u < latest_depth_image.cols && v < latest_depth_image.rows) {
+                    double depth = latest_depth_image.at<uint16_t>(v, u) * 0.001;
+                    if (depth > 0.2 && depth < 2.0) {
+                        ROS_INFO("[Node B] Valid depth: %f meters", depth);
+                    } else {
+                        ROS_WARN("[Node B] Invalid depth for tag %d. Ignoring.", tag_id);
+                        continue;
+                    }
+                } else {
+                    ROS_WARN("[Node B] Tag %d out of image bounds. Ignoring.", tag_id);
+                    continue;
+                }
 
-		        // Cancel the current goal to prioritize detection
-		        if (goal_active) {
-		            action_client.cancelGoal();
-		            goal_active = false;
-		        }
+                geometry_msgs::PoseStamped tag_pose_in_map = transformPose(tag_pose_in_camera, "map");
+                if (!tag_pose_in_map.header.frame_id.empty()) {
+                    detected_cubes.push_back(tag_pose_in_map);
+                    ROS_INFO("[Node B] Transformed pose to map frame: (x: %f, y: %f, z: %f)",
+                             tag_pose_in_map.pose.position.x,
+                             tag_pose_in_map.pose.position.y,
+                             tag_pose_in_map.pose.position.z);
+                }
 
-		        // Check if all target IDs are found
-		        if (detected_cubes.size() == received_tags.size()) {
-		            ROS_INFO("[Node B] All target tags detected. Task complete.");
-		            sendCubePositionsToNodeA();
-		            publishFeedback("Task complete. Shutting down.");
-		            ros::shutdown();
-		        }
-		    }
-		}
-	}
+                publishFeedback("The robot has already found Apriltags with IDs: " +
+                                std::to_string(tag_id));
 
+                if (goal_active) {
+                    action_client.cancelGoal();
+                    goal_active = false;
+                }
+
+                if (detected_cubes.size() == received_tags.size()) {
+                    ROS_INFO("[Node B] All target tags detected. Task complete.");
+                    publishFeedback("The detection is finished. All Apriltags found.");
+                    sendCubePositionsToNodeA();
+                    ros::shutdown();
+                }
+            }
+        }
+    }
 
     geometry_msgs::PoseStamped transformPose(const geometry_msgs::PoseStamped& input_pose, const std::string& target_frame) {
         geometry_msgs::PoseStamped output_pose;
@@ -166,7 +207,7 @@ private:
         goal.target_pose = goal_pose;
 
         ROS_INFO("[Node B] Sending goal to (x: %f, y: %f)", goal_pose.pose.position.x, goal_pose.pose.position.y);
-        publishFeedback("Navigating to goal...");
+        publishFeedback("The robot is moving.");
         goal_active = true;
 
         action_client.sendGoal(goal,
@@ -181,8 +222,10 @@ private:
         if (state == actionlib::SimpleClientGoalState::SUCCEEDED) {
             ROS_INFO("[Node B] Reached goal successfully.");
             current_goal_index++;
+            publishFeedback("The robot has reached its goal.");
         } else {
             ROS_WARN("[Node B] Failed to reach goal. Retrying...");
+            publishFeedback("The robot failed to reach its goal. Retrying...");
         }
     }
 

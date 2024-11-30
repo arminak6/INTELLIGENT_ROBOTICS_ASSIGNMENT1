@@ -12,12 +12,11 @@ void feedbackCallback(const std_msgs::String::ConstPtr& msg) {
     ROS_INFO("[Node A] Feedback from Node B: %s", msg->data.c_str());
 }
 
-// Callback to receive the final list of cube positions from Node B
+// Callback to handle cube positions from Node B
 void cubePositionsCallback(const geometry_msgs::PoseArray::ConstPtr& msg) {
-    ROS_INFO("[Node A] Received final list of cube positions:");
+    ROS_INFO("[Node A] Received cube positions from Node B.");
     for (const auto& pose : msg->poses) {
-        ROS_INFO("[Node A] Cube at: [x: %f, y: %f, z: %f]",
-                 pose.position.x, pose.position.y, pose.position.z);
+        ROS_INFO("Cube position: [x: %f, y: %f, z: %f]", pose.position.x, pose.position.y, pose.position.z);
     }
 }
 
@@ -37,28 +36,42 @@ int main(int argc, char **argv) {
     ros::ServiceClient client = nh.serviceClient<assignment_1::ApriltagsIdS>("apriltag_ids_srv");
 
     // Initialize the publisher to send IDs to Node B
-    ids_publisher = nh.advertise<std_msgs::Int32MultiArray>("/apriltag_ids_topic", 10);
+    ids_publisher = nh.advertise<std_msgs::Int32MultiArray>("apriltag_ids_topic", 10);
 
     // Subscribe to feedback from Node B
-    ros::Subscriber feedback_subscriber = nh.subscribe("/node_b_feedback", 10, feedbackCallback);
+    ros::Subscriber feedback_subscriber = nh.subscribe("node_b_feedback", 10, feedbackCallback);
 
-    // Subscribe to receive the final list of cube positions from Node B
-    ros::Subscriber positions_subscriber = nh.subscribe("/final_cube_positions", 10, cubePositionsCallback);
+    // Subscribe to cube positions from Node B
+    ros::Subscriber cube_positions_subscriber = nh.subscribe("cube_positions_topic", 10, cubePositionsCallback);
 
-    // Request IDs from the apriltag service
+    // Prepare the service request and response
     assignment_1::ApriltagsIdS srv;
+    srv.request.ready = true;
+
+    // Call the service to get the apriltag IDs
     if (client.call(srv)) {
-        ROS_INFO("[Node A] Received IDs from the server.");
-        std_msgs::Int32MultiArray id_msg;
-        id_msg.data = srv.response.ids;
-        ids_publisher.publish(id_msg);
-        ROS_INFO("[Node A] Published IDs to Node B.");
+        ROS_INFO("[Node A] Received IDs:");
+
+        // Prepare the message to send IDs to Node B
+        std_msgs::Int32MultiArray ids_msg;
+        for (int id : srv.response.ids) {
+            ROS_INFO("%d", id);
+            ids_msg.data.push_back(id);
+        }
+
+        // Publish the IDs
+        ros::Rate loop_rate(1); // 1 Hz
+        for (int i = 0; i < 5; ++i) { // Publish multiple times to ensure Node B gets the message
+            ids_publisher.publish(ids_msg);
+            ROS_INFO("[Node A] Published IDs to Node B (attempt %d).", i + 1);
+            loop_rate.sleep();
+        }
     } else {
         ROS_ERROR("[Node A] Failed to call service apriltag_ids_srv.");
         return 1;
     }
 
-    // Spin to process callbacks
+    // Spin to handle callbacks (e.g., feedback from Node B, cube positions)
     ros::spin();
 
     return 0;
