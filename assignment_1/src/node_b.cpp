@@ -11,7 +11,7 @@
 #include <vector>
 #include <algorithm>
 #include <tf/transform_datatypes.h>
-#include "assignment_1/SendCubePositions.h"  // Replace 'assignment_1' with your package name
+#include "assignment_1/SendCubePositions.h"  
 #include <sensor_msgs/Image.h>
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/opencv.hpp>
