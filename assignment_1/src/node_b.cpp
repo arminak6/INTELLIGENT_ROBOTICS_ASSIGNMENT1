@@ -16,6 +16,9 @@
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/opencv.hpp>
 #include <image_transport/image_transport.h>
+#include <trajectory_msgs/JointTrajectory.h>
+#include <trajectory_msgs/JointTrajectoryPoint.h>
+
 
 typedef actionlib::SimpleActionClient<move_base_msgs::MoveBaseAction> MoveBaseClient;
 
@@ -43,8 +46,38 @@ public:
         defineNavigationGoals();
         startNavigation();
     }
+	void adjustCameraAngle() {
+
+		ros::Publisher head_pub = nh.advertise<trajectory_msgs::JointTrajectory>("/head_controller/command", 10);
+
+		// Wait for the publisher to be ready
+		ros::Rate rate(10);
+		while (head_pub.getNumSubscribers() == 0 && ros::ok()) {
+		    ROS_INFO("[Node B] Waiting for head controller to be ready...");
+		    rate.sleep();
+		}
+
+		// Create the joint trajectory message
+		trajectory_msgs::JointTrajectory msg;
+		msg.joint_names.push_back("head_1_joint"); // Yaw (left-right) - keep as is
+		msg.joint_names.push_back("head_2_joint"); // Pitch (up-down)
+
+		trajectory_msgs::JointTrajectoryPoint point;
+		point.positions.push_back(0.0);  // Keep yaw centered
+		point.positions.push_back(-0.7); // Tilt head down by 0.5 radians
+		point.time_from_start = ros::Duration(1.0); // 1 second to reach the position
+
+		msg.points.push_back(point);
+
+		// Publish the message
+		head_pub.publish(msg);
+
+		ROS_INFO("[Node B] Adjusted camera angle: Tilted downwards.");
+	}
+
 
 private:
+	ros::NodeHandle nh;
     ros::Subscriber tag_detections_subscriber;
     ros::Subscriber target_ids_subscriber;
     ros::Publisher feedback_publisher;
@@ -67,16 +100,25 @@ private:
 
     size_t current_goal_index = 0;
     bool goal_active = false;
+	void printReceivedTags() {
+		std::ostringstream oss;
+		oss << "Received tags: ";
+		for (int id : received_tags) {
+		    oss << id << " ";
+		}
+		ROS_INFO("[Node B] %s", oss.str().c_str());
+	}
 
-    void targetIdsCallback(const std_msgs::Int32MultiArray::ConstPtr& ids_msg) {
-        received_tags.clear();
-        ROS_INFO("[Node B] Received Apriltag IDs from Node A:");
-        for (int id : ids_msg->data) {
-            ROS_INFO("Apriltag ID: %d", id);
-            received_tags.push_back(id);
-        }
-        ROS_INFO("[Node B] Stored %lu tags from Node A.", received_tags.size());
-    }
+
+	void targetIdsCallback(const std_msgs::Int32MultiArray::ConstPtr& ids_msg) {
+		received_tags.clear();
+		for (int id : ids_msg->data) {
+		    received_tags.push_back(id);
+		}
+		printReceivedTags();
+	}
+
+
 
     void rgbImageCallback(const sensor_msgs::ImageConstPtr& msg) {
         try {
@@ -268,15 +310,21 @@ private:
         feedback_msg.data = message;
         feedback_publisher.publish(feedback_msg);
     }
+
+
 };
 
 int main(int argc, char** argv) {
     ros::init(argc, argv, "node_b");
     ros::NodeHandle nh;
 
-    NodeB node_b(nh);
+    NodeB node_b(nh); // Pass NodeHandle when creating the NodeB object
+    node_b.adjustCameraAngle();
 
     ros::spin();
     return 0;
 }
+
+
+
 
