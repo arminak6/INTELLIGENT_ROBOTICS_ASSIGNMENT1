@@ -11,13 +11,15 @@
 #include <vector>
 #include <algorithm>
 #include <tf/transform_datatypes.h>
-#include "assignment_1/SendCubePositions.h"  
+#include "assignment_1/SendCubePositions.h" 
 #include <sensor_msgs/Image.h>
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/opencv.hpp>
 #include <image_transport/image_transport.h>
 #include <trajectory_msgs/JointTrajectory.h>
 #include <trajectory_msgs/JointTrajectoryPoint.h>
+#include <geometry_msgs/Twist.h>
+
 
 
 typedef actionlib::SimpleActionClient<move_base_msgs::MoveBaseAction> MoveBaseClient;
@@ -30,6 +32,7 @@ public:
         target_ids_subscriber = nh.subscribe("/apriltag_ids_topic", 10, &NodeB::targetIdsCallback, this);
         feedback_publisher = nh.advertise<std_msgs::String>("/node_b/feedback", 10);
         cube_positions_publisher = nh.advertise<geometry_msgs::PoseArray>("/node_b/cube_positions", 10);
+		cmd_vel_pub = nh.advertise<geometry_msgs::Twist>("/cmd_vel", 10);
 
         // Subscribe to RGB-D data
         rgb_image_subscriber = it.subscribe("/xtion/rgb/image_raw", 10, &NodeB::rgbImageCallback, this);
@@ -74,10 +77,43 @@ public:
 
 		ROS_INFO("[Node B] Adjusted camera angle: Tilted downwards.");
 	}
+    void recoverFromStuck() {
+        ROS_WARN("[Node B] Robot appears to be stuck. Attempting recovery...");
+        geometry_msgs::Twist recovery_cmd;
+        recovery_cmd.linear.x = -0.1; // Backup slowly
+        recovery_cmd.angular.z = 0.5; // Rotate slightly
+        cmd_vel_pub.publish(recovery_cmd);
+        ros::Duration(1.0).sleep(); // Allow time for the recovery
+        ROS_INFO("[Node B] Recovery attempt completed.");
+    }
+
+    void monitorRobot(const geometry_msgs::Pose& current_pose) {
+        static ros::Time last_movement_time = ros::Time::now();
+        static geometry_msgs::Pose last_pose = current_pose;
+
+        if (isPoseEqual(last_pose, current_pose)) {
+            if ((ros::Time::now() - last_movement_time).toSec() > 5.0) { // 5 seconds
+                recoverFromStuck(); // Attempt recovery
+                last_movement_time = ros::Time::now(); // Reset timer
+            }
+        } else {
+            last_movement_time = ros::Time::now(); // Update movement time
+        }
+
+        last_pose = current_pose;
+    }
+
+    bool isPoseEqual(const geometry_msgs::Pose& pose1, const geometry_msgs::Pose& pose2) {
+        double tolerance = 0.01; // Position tolerance
+        return fabs(pose1.position.x - pose2.position.x) < tolerance &&
+               fabs(pose1.position.y - pose2.position.y) < tolerance &&
+               fabs(pose1.orientation.z - pose2.orientation.z) < tolerance;
+    }
 
 
 private:
 	ros::NodeHandle nh;
+	ros::Publisher cmd_vel_pub;
     ros::Subscriber tag_detections_subscriber;
     ros::Subscriber target_ids_subscriber;
     ros::Publisher feedback_publisher;
@@ -317,13 +353,35 @@ private:
 int main(int argc, char** argv) {
     ros::init(argc, argv, "node_b");
     ros::NodeHandle nh;
+    NodeB node_b(nh);
 
-    NodeB node_b(nh); // Pass NodeHandle when creating the NodeB object
-    node_b.adjustCameraAngle();
+    tf2_ros::Buffer tf_buffer;
+    tf2_ros::TransformListener tf_listener(tf_buffer);
 
-    ros::spin();
+    ros::Rate loop_rate(10); // 10 Hz
+    while (ros::ok()) {
+        geometry_msgs::Pose current_pose;
+
+        try {
+            geometry_msgs::TransformStamped transform_stamped;
+            transform_stamped = tf_buffer.lookupTransform("map", "base_link", ros::Time(0)); // Transform from map to base_link
+            current_pose.position.x = transform_stamped.transform.translation.x;
+            current_pose.position.y = transform_stamped.transform.translation.y;
+            current_pose.orientation = transform_stamped.transform.rotation;
+        } catch (tf2::TransformException& ex) {
+            ROS_WARN("[Node B] Could not get current pose: %s", ex.what());
+            ros::Duration(1.0).sleep();
+            continue;
+        }
+
+        node_b.monitorRobot(current_pose); // Monitor robot's movement
+        ros::spinOnce();
+        loop_rate.sleep();
+    }
+
     return 0;
 }
+
 
 
 
