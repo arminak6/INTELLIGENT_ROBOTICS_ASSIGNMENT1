@@ -19,9 +19,13 @@
 #include <image_transport/image_transport.h>
 #include <trajectory_msgs/JointTrajectory.h>
 #include <trajectory_msgs/JointTrajectoryPoint.h>
+#include <control_msgs/FollowJointTrajectoryAction.h>
+#include <control_msgs/JointTrajectoryControllerState.h>
+#include <geometry_msgs/Twist.h>
 
 
 typedef actionlib::SimpleActionClient<move_base_msgs::MoveBaseAction> MoveBaseClient;
+typedef actionlib::SimpleActionClient<control_msgs::FollowJointTrajectoryAction> HeadClient;
 
 class NodeB {
 public:
@@ -43,37 +47,71 @@ public:
         action_client.waitForServer();
         ROS_INFO("Node B initialized and move_base is ready.");
 
+        // adjust camera
+        bool success = adjustCameraAngle(-0.5);
+        if (success) {
+            ROS_INFO("Camera movement completed successfully");
+        } else {
+            ROS_ERROR("Failed to move camera");
+        }
+
         // Define navigation goals
         defineNavigationGoals();
         startNavigation();
     }
-	void adjustCameraAngle() {
 
-		ros::Publisher head_pub = nh.advertise<trajectory_msgs::JointTrajectory>("/head_controller/command", 10);
+    // adjusting camera angle
+	bool  adjustCameraAngle(double tilt_angle) {
 
-		// Wait for the publisher to be ready
-		ros::Rate rate(10);
-		while (head_pub.getNumSubscribers() == 0 && ros::ok()) {
-		    ROS_INFO("[Node B] Waiting for head controller to be ready...");
-		    rate.sleep();
-		}
+        HeadClient* head_client_ = new HeadClient("head_controller/follow_joint_trajectory", true);
+        
+        while(!head_client_->waitForServer(ros::Duration(5.0))){
+            ROS_INFO("Waiting for head controller action server to come up...");
+        }
 
-		// Create the joint trajectory message
-		trajectory_msgs::JointTrajectory msg;
-		msg.joint_names.push_back("head_1_joint"); // Yaw (left-right) - keep as is
-		msg.joint_names.push_back("head_2_joint"); // Pitch (up-down)
-
-		trajectory_msgs::JointTrajectoryPoint point;
-		point.positions.push_back(0.0);  // Keep yaw centered
-		point.positions.push_back(-0.7); // Tilt head down by 0.5 radians
-		point.time_from_start = ros::Duration(1.0); // 1 second to reach the position
-
-		msg.points.push_back(point);
-
-		// Publish the message
-		head_pub.publish(msg);
-
-		ROS_INFO("[Node B] Adjusted camera angle: Tilted downwards.");
+        // moveCamera
+        control_msgs::FollowJointTrajectoryGoal goal;
+        
+        goal.trajectory.joint_names.push_back("head_1_joint");
+        goal.trajectory.joint_names.push_back("head_2_joint");
+        
+        trajectory_msgs::JointTrajectoryPoint point;
+        point.positions.push_back(0.0);
+        point.positions.push_back(tilt_angle);
+        
+        point.velocities.push_back(0.1);
+        point.velocities.push_back(0.1);
+        
+        point.time_from_start = ros::Duration(2.0);
+        
+        goal.trajectory.points.push_back(point);
+        
+        // Send the goal and wait for result with timeout
+        bool finished_before_timeout = head_client_->sendGoalAndWait(goal, ros::Duration(5.0)) == actionlib::SimpleClientGoalState::SUCCEEDED;
+        
+        if (finished_before_timeout) {
+            actionlib::SimpleClientGoalState state = head_client_->getState();
+            ROS_INFO("Camera movement succeeded! Final state: %s", state.toString().c_str());
+            
+            // Get the result
+            control_msgs::FollowJointTrajectoryResultConstPtr result = head_client_->getResult();
+            if (result) {
+                // Check error code
+                if (result->error_code == control_msgs::FollowJointTrajectoryResult::SUCCESSFUL) {
+                    ROS_INFO("Movement completed successfully with no errors");
+                } else {
+                    ROS_WARN("Movement completed but with error code: %d", result->error_code);
+                }
+            }
+            delete head_client_;
+            return true;
+        } else {
+            ROS_ERROR("Camera movement failed or timed out!");
+            actionlib::SimpleClientGoalState state = head_client_->getState();
+            ROS_ERROR("Final state: %s", state.toString().c_str());
+            delete head_client_;
+            return false;
+        }
 	}
 
 
@@ -124,7 +162,7 @@ private:
     void rgbImageCallback(const sensor_msgs::ImageConstPtr& msg) {
         try {
             latest_rgb_image = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8)->image;
-            ROS_INFO("[Node B] Received RGB image.");
+            //ROS_INFO("[Node B] Received RGB image.");
         } catch (cv_bridge::Exception& e) {
             ROS_ERROR("cv_bridge exception: %s", e.what());
         }
@@ -249,7 +287,7 @@ private:
         move_base_msgs::MoveBaseGoal goal;
         goal.target_pose = goal_pose;
 
-        ROS_INFO("[Node B] Sending goal to (x: %f, y: %f)", goal_pose.pose.position.x, goal_pose.pose.position.y);
+        ROS_INFO("[Node B] Sending goal to (x: %f, y: %f), index = %ld", goal_pose.pose.position.x, goal_pose.pose.position.y, current_goal_index);
         publishFeedback("The robot is moving.");
         goal_active = true;
 
@@ -320,7 +358,7 @@ int main(int argc, char** argv) {
     ros::NodeHandle nh;
 
     NodeB node_b(nh); // Pass NodeHandle when creating the NodeB object
-    node_b.adjustCameraAngle();
+
 
     ros::spin();
     return 0;
