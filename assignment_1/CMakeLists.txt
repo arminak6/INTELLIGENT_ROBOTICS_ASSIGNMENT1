@@ -141,6 +141,11 @@ include_directories(
 #   src/${PROJECT_NAME}/assignment_1.cpp
 # )
 
+# Add the library for frontier_utils
+add_library(frontier_utils
+  src/frontier_utils.cpp
+)
+
 ## Add cmake target dependencies of the library
 ## as an example, code may need to be generated before libraries
 ## either from message generation or dynamic reconfigure
@@ -165,6 +170,11 @@ include_directories(
 # target_link_libraries(${PROJECT_NAME}_node
 #   ${catkin_LIBRARIES}
 # )
+
+# Link the library with catkin
+target_link_libraries(frontier_utils
+  ${catkin_LIBRARIES}
+)
 
 #############
 ## Install ##
@@ -243,6 +253,8 @@ add_executable(node_a src/node_a.cpp)
 add_executable(node_b src/node_b.cpp)
 target_link_libraries(node_a ${catkin_LIBRARIES})
 target_link_libraries(node_b ${catkin_LIBRARIES})
+####target_link_libraries(node_b frontier_utils ${catkin_LIBRARIES})
+
 
 add_dependencies(node_a assignment_1_generate_messages_cpp)
 add_dependencies(node_b assignment_1_generate_messages_cpp)
