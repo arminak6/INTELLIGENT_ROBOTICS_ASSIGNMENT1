@@ -11,16 +11,12 @@
 #include <vector>
 #include <algorithm>
 #include <tf/transform_datatypes.h>
-#include "assignment_1/SendCubePositions.h" 
+#include "assignment_1/SendCubePositions.h"  
 #include <sensor_msgs/Image.h>
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/opencv.hpp>
 #include <image_transport/image_transport.h>
-#include <trajectory_msgs/JointTrajectory.h>
-#include <trajectory_msgs/JointTrajectoryPoint.h>
-#include <geometry_msgs/Twist.h>
-
-
+#include <sensor_msgs/LaserScan.h>  // Include LaserScan header
 
 typedef actionlib::SimpleActionClient<move_base_msgs::MoveBaseAction> MoveBaseClient;
 
@@ -28,15 +24,17 @@ class NodeB {
 public:
     NodeB(ros::NodeHandle& nh) : action_client("move_base", true), tf_listener(tf_buffer), it(nh) {
         // Initialize subscribers and publishers
-        tag_detections_subscriber = nh.subscribe("/tag_detections", 10, &NodeB::tagDetectionsCallback, this);
         target_ids_subscriber = nh.subscribe("/apriltag_ids_topic", 10, &NodeB::targetIdsCallback, this);
+        tag_detections_subscriber = nh.subscribe("/tag_detections", 10, &NodeB::tagDetectionsCallback, this);
         feedback_publisher = nh.advertise<std_msgs::String>("/node_b/feedback", 10);
         cube_positions_publisher = nh.advertise<geometry_msgs::PoseArray>("/node_b/cube_positions", 10);
-		cmd_vel_pub = nh.advertise<geometry_msgs::Twist>("/cmd_vel", 10);
 
         // Subscribe to RGB-D data
         rgb_image_subscriber = it.subscribe("/xtion/rgb/image_raw", 10, &NodeB::rgbImageCallback, this);
         depth_image_subscriber = it.subscribe("/xtion/depth/image_raw", 10, &NodeB::depthImageCallback, this);
+
+        // Subscribe to LaserScan data for obstacle detection
+        laser_scan_subscriber = nh.subscribe("/scan", 10, &NodeB::laserScanCallback, this);
 
         // Initialize service client
         send_positions_client = nh.serviceClient<assignment_1::SendCubePositions>("/node_a/send_cube_positions");
@@ -49,73 +47,11 @@ public:
         defineNavigationGoals();
         startNavigation();
     }
-	void adjustCameraAngle() {
-
-		ros::Publisher head_pub = nh.advertise<trajectory_msgs::JointTrajectory>("/head_controller/command", 10);
-
-		// Wait for the publisher to be ready
-		ros::Rate rate(10);
-		while (head_pub.getNumSubscribers() == 0 && ros::ok()) {
-		    ROS_INFO("[Node B] Waiting for head controller to be ready...");
-		    rate.sleep();
-		}
-
-		// Create the joint trajectory message
-		trajectory_msgs::JointTrajectory msg;
-		msg.joint_names.push_back("head_1_joint"); // Yaw (left-right) - keep as is
-		msg.joint_names.push_back("head_2_joint"); // Pitch (up-down)
-
-		trajectory_msgs::JointTrajectoryPoint point;
-		point.positions.push_back(0.0);  // Keep yaw centered
-		point.positions.push_back(-0.7); // Tilt head down by 0.5 radians
-		point.time_from_start = ros::Duration(1.0); // 1 second to reach the position
-
-		msg.points.push_back(point);
-
-		// Publish the message
-		head_pub.publish(msg);
-
-		ROS_INFO("[Node B] Adjusted camera angle: Tilted downwards.");
-	}
-    void recoverFromStuck() {
-        ROS_WARN("[Node B] Robot appears to be stuck. Attempting recovery...");
-        geometry_msgs::Twist recovery_cmd;
-        recovery_cmd.linear.x = -0.1; // Backup slowly
-        recovery_cmd.angular.z = 0.5; // Rotate slightly
-        cmd_vel_pub.publish(recovery_cmd);
-        ros::Duration(1.0).sleep(); // Allow time for the recovery
-        ROS_INFO("[Node B] Recovery attempt completed.");
-    }
-
-    void monitorRobot(const geometry_msgs::Pose& current_pose) {
-        static ros::Time last_movement_time = ros::Time::now();
-        static geometry_msgs::Pose last_pose = current_pose;
-
-        if (isPoseEqual(last_pose, current_pose)) {
-            if ((ros::Time::now() - last_movement_time).toSec() > 5.0) { // 5 seconds
-                recoverFromStuck(); // Attempt recovery
-                last_movement_time = ros::Time::now(); // Reset timer
-            }
-        } else {
-            last_movement_time = ros::Time::now(); // Update movement time
-        }
-
-        last_pose = current_pose;
-    }
-
-    bool isPoseEqual(const geometry_msgs::Pose& pose1, const geometry_msgs::Pose& pose2) {
-        double tolerance = 0.01; // Position tolerance
-        return fabs(pose1.position.x - pose2.position.x) < tolerance &&
-               fabs(pose1.position.y - pose2.position.y) < tolerance &&
-               fabs(pose1.orientation.z - pose2.orientation.z) < tolerance;
-    }
-
 
 private:
-	ros::NodeHandle nh;
-	ros::Publisher cmd_vel_pub;
     ros::Subscriber tag_detections_subscriber;
     ros::Subscriber target_ids_subscriber;
+    ros::Subscriber laser_scan_subscriber;  // LaserScan subscriber
     ros::Publisher feedback_publisher;
     ros::Publisher cube_positions_publisher;
     ros::ServiceClient send_positions_client;
@@ -136,25 +72,19 @@ private:
 
     size_t current_goal_index = 0;
     bool goal_active = false;
-	void printReceivedTags() {
-		std::ostringstream oss;
-		oss << "Received tags: ";
-		for (int id : received_tags) {
-		    oss << id << " ";
-		}
-		ROS_INFO("[Node B] %s", oss.str().c_str());
-	}
+    bool obstacle_detected = false;
+    bool goal_1_reached = false;  // Flag to check if Goal 1 is reached
+    bool laser_scan_ready = false;  // Flag for laser scan processing
 
-
-	void targetIdsCallback(const std_msgs::Int32MultiArray::ConstPtr& ids_msg) {
-		received_tags.clear();
-		for (int id : ids_msg->data) {
-		    received_tags.push_back(id);
-		}
-		printReceivedTags();
-	}
-
-
+    void targetIdsCallback(const std_msgs::Int32MultiArray::ConstPtr& ids_msg) {
+        received_tags.clear();
+        ROS_INFO("[Node B] Received Apriltag IDs from Node A:");
+        for (int id : ids_msg->data) {
+            ROS_INFO("Apriltag ID: %d", id);
+            received_tags.push_back(id);
+        }
+        ROS_INFO("[Node B] Stored %lu tags from Node A.", received_tags.size());
+    }
 
     void rgbImageCallback(const sensor_msgs::ImageConstPtr& msg) {
         try {
@@ -174,6 +104,34 @@ private:
         }
     }
 
+    void laserScanCallback(const sensor_msgs::LaserScan::ConstPtr& msg) {
+        if (laser_scan_ready) {
+            obstacle_detected = false;
+            // Iterate through laser scan data and check if any reading is below threshold
+            for (size_t i = 0; i < msg->ranges.size(); ++i) {
+                if (msg->ranges[i] < 1.0) {  // If an obstacle is within 1 meter
+                    obstacle_detected = true;
+                    ROS_WARN("[Node B] Obstacle detected! Replanning path.");
+                    break;
+                }
+            }
+
+            // If an obstacle is detected, adjust the goal position
+            if (obstacle_detected) {
+                if (current_goal_index < navigation_goals.size()) {
+                    geometry_msgs::PoseStamped& current_goal = navigation_goals[current_goal_index];
+                    // Shift the goal position by 1 meter to avoid the obstacle
+                    current_goal.pose.position.x += 0.3;  // Adjust x by 1 meter
+                    current_goal.pose.position.y += 0.2;  // Adjust y by 1 meter
+
+                    ROS_INFO("[Node B] New goal after obstacle avoidance: (x: %f, y: %f)",
+                             current_goal.pose.position.x, current_goal.pose.position.y);
+                    sendNextGoal(current_goal);  // Re-send updated goal
+                }
+            }
+        }
+    }
+
     void tagDetectionsCallback(const apriltag_ros::AprilTagDetectionArray::ConstPtr& detections_msg) {
         if (detections_msg->detections.empty()) {
             ROS_INFO_THROTTLE(1, "[Node B] No tags detected.");
@@ -186,6 +144,8 @@ private:
 
             if (std::find(received_tags.begin(), received_tags.end(), tag_id) != received_tags.end()) {
                 ROS_INFO("[Node B] Detected target Apriltag ID: %d", tag_id);
+                ROS_INFO("[Node B] Local tag ID %d matches a tag from Node A.", tag_id);
+
 
                 geometry_msgs::PoseStamped tag_pose_in_camera;
                 tag_pose_in_camera.header = detection.pose.header;
@@ -229,6 +189,8 @@ private:
                     sendCubePositionsToNodeA();
                     ros::shutdown();
                 }
+            }else {
+                ROS_INFO("[Node B] Local tag ID %d does not match any tag from Node A.", tag_id);
             }
         }
     }
@@ -295,10 +257,15 @@ private:
     }
 
     void doneCallback(const actionlib::SimpleClientGoalState& state,
-                      const move_base_msgs::MoveBaseResult::ConstPtr& result) {
+                    const move_base_msgs::MoveBaseResult::ConstPtr& result) {
         goal_active = false;
         if (state == actionlib::SimpleClientGoalState::SUCCEEDED) {
             ROS_INFO("[Node B] Reached goal successfully.");
+            if (current_goal_index == 0) {
+                goal_1_reached = true;  // Mark that goal 1 is reached
+                ROS_INFO("[Node B] Goal 1 reached. Now processing laser scan data.");
+                laser_scan_ready = true;  // Set flag to start processing laser scan data
+            }
             current_goal_index++;
             publishFeedback("The robot has reached its goal.");
         } else {
@@ -346,43 +313,15 @@ private:
         feedback_msg.data = message;
         feedback_publisher.publish(feedback_msg);
     }
-
-
 };
 
 int main(int argc, char** argv) {
     ros::init(argc, argv, "node_b");
     ros::NodeHandle nh;
+
     NodeB node_b(nh);
 
-    tf2_ros::Buffer tf_buffer;
-    tf2_ros::TransformListener tf_listener(tf_buffer);
-
-    ros::Rate loop_rate(10); // 10 Hz
-    while (ros::ok()) {
-        geometry_msgs::Pose current_pose;
-
-        try {
-            geometry_msgs::TransformStamped transform_stamped;
-            transform_stamped = tf_buffer.lookupTransform("map", "base_link", ros::Time(0)); // Transform from map to base_link
-            current_pose.position.x = transform_stamped.transform.translation.x;
-            current_pose.position.y = transform_stamped.transform.translation.y;
-            current_pose.orientation = transform_stamped.transform.rotation;
-        } catch (tf2::TransformException& ex) {
-            ROS_WARN("[Node B] Could not get current pose: %s", ex.what());
-            ros::Duration(1.0).sleep();
-            continue;
-        }
-
-        node_b.monitorRobot(current_pose); // Monitor robot's movement
-        ros::spinOnce();
-        loop_rate.sleep();
-    }
-
+    ros::spin();
     return 0;
 }
-
-
-
-
 
