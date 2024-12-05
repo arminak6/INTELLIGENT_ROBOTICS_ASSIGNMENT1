@@ -12,7 +12,7 @@
 #include <vector>
 #include <algorithm>
 #include <tf/transform_datatypes.h>
-#include "assignment_1/SendCubePositions.h"  // Replace 'assignment_1' with your package name
+#include "assignment_1/SendCubePositions.h"  
 #include <sensor_msgs/Image.h>
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/opencv.hpp>
@@ -60,11 +60,11 @@ public:
 
 		// Create the joint trajectory message
 		trajectory_msgs::JointTrajectory msg;
-		msg.joint_names.push_back("head_1_joint"); // Yaw (left-right) - keep as is
+		msg.joint_names.push_back("head_1_joint"); 
 		msg.joint_names.push_back("head_2_joint"); // Pitch (up-down)
 
 		trajectory_msgs::JointTrajectoryPoint point;
-		point.positions.push_back(0.0);  // Keep yaw centered
+		point.positions.push_back(0.0);  
 		point.positions.push_back(-0.7); // Tilt head down by 0.5 radians
 		point.time_from_start = ros::Duration(1.0); // 1 second to reach the position
 
