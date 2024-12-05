@@ -185,9 +185,7 @@ private:
     // Check if all target tags are found
     if (detected_cubes.size() == received_tags.size()) {
         ROS_INFO("[Node B] All target tags detected.");
-        // Further processing or action
-    	}
-	}
+
 	
 	bool validateTagDepth(const geometry_msgs::PoseStamped& tag_pose) {
 		// Precise pixel coordinate extraction
