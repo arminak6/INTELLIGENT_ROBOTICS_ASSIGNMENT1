@@ -142,9 +142,9 @@ include_directories(
 # )
 
 # Add the library for frontier_utils
-add_library(frontier_utils
-  src/frontier_utils.cpp
-)
+#add_library(frontier_utils
+#  src/frontier_utils.cpp
+#)
 
 ## Add cmake target dependencies of the library
 ## as an example, code may need to be generated before libraries
@@ -172,9 +172,9 @@ add_library(frontier_utils
 # )
 
 # Link the library with catkin
-target_link_libraries(frontier_utils
-  ${catkin_LIBRARIES}
-)
+#target_link_libraries(frontier_utils
+#  ${catkin_LIBRARIES}
+#)
 
 #############
 ## Install ##
