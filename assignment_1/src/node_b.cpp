@@ -272,76 +272,59 @@ private:
         }
     }
 
-    void tagDetectionsCallback(const apriltag_ros::AprilTagDetectionArray::ConstPtr& detections_msg) {
-        if (detections_msg->detections.empty()) {
-            ROS_INFO_THROTTLE(1, "[Node B] No tags detected.");
-            publishFeedback("The robot is scanning.");
-            return;
-        }
+    void tagDetectionsCallback(const apriltag_ros::AprilTagDetectionArray::ConstPtr& msg) {
+        std::string target_frame = "map";
+        std::string source_frame = msg->header.frame_id;
 
-        for (const auto& detection : detections_msg->detections) {
-            int tag_id = detection.id[0];
+        tf2_ros::Buffer tfBuffer;
+        tf2_ros::TransformListener tfListener(tfBuffer);
 
-            if (std::find(received_tags.begin(), received_tags.end(), tag_id) != received_tags.end()) {
-                ROS_INFO("[Node B] Detected target Apriltag ID: %d", tag_id);
+        while(!tfBuffer.canTransform(target_frame, source_frame, ros::Time(0)))
+            ros::Duration(0.5).sleep();
 
-                geometry_msgs::PoseStamped tag_pose_in_camera;
-                tag_pose_in_camera.header = detection.pose.header;
-                tag_pose_in_camera.pose = detection.pose.pose.pose;
+        geometry_msgs::TransformStamped transformed = tfBuffer.lookupTransform(target_frame, source_frame, ros::Time(0), ros::Duration(1.0));
+        
+        //Transform available
+        geometry_msgs::PoseStamped pos_in;
+        geometry_msgs::PoseStamped pos_out;
 
-                int u = static_cast<int>(tag_pose_in_camera.pose.position.x * 100);
-                int v = static_cast<int>(tag_pose_in_camera.pose.position.y * 100);
-                if (u >= 0 && v >= 0 && u < latest_depth_image.cols && v < latest_depth_image.rows) {
-                    double depth = latest_depth_image.at<uint16_t>(v, u) * 0.001;
-                    if (depth > 0.2 && depth < 2.0) {
-                        ROS_INFO("[Node B] Valid depth: %f meters", depth);
-                    } else {
-                        ROS_WARN("[Node B] Invalid depth for tag %d. Ignoring.", tag_id);
-                        continue;
-                    }
-                } else {
-                    ROS_WARN("[Node B] Tag %d out of image bounds. Ignoring.", tag_id);
-                    continue;
-                }
+        for(int i = 0; i < msg->detections.size(); ++i)
+        {
+            pos_in.header.frame_id = msg->detections.at(i).pose.header.frame_id;
+            pos_in.pose.position.x = msg->detections.at(i).pose.pose.pose.position.x;
+            pos_in.pose.position.y = msg->detections.at(i).pose.pose.pose.position.y;
+            pos_in.pose.position.z = msg->detections.at(i).pose.pose.pose.position.z;
+            pos_in.pose.orientation.x = msg->detections.at(i).pose.pose.pose.orientation.x;
+            pos_in.pose.orientation.y = msg->detections.at(i).pose.pose.pose.orientation.y;
+            pos_in.pose.orientation.z = msg->detections.at(i).pose.pose.pose.orientation.z;
+            pos_in.pose.orientation.w = msg->detections.at(i).pose.pose.pose.orientation.w;
+        
+            tf2::doTransform(pos_in, pos_out, transformed);
 
-                geometry_msgs::PoseStamped tag_pose_in_map = transformPose(tag_pose_in_camera, "map");
-                if (!tag_pose_in_map.header.frame_id.empty()) {
-                    detected_cubes.push_back(tag_pose_in_map);
-                    ROS_INFO("[Node B] Transformed pose to map frame: (x: %f, y: %f, z: %f)",
-                             tag_pose_in_map.pose.position.x,
-                             tag_pose_in_map.pose.position.y,
-                             tag_pose_in_map.pose.position.z);
-                }
+            // original pose
+            const auto& pp = pos_in.pose.position;
+            const auto& po = pos_in.pose.orientation;
+            // transformed pose
+            const auto& mp = pos_out.pose.position;
+            const auto& mo = pos_out.pose.orientation;
 
-                publishFeedback("The robot has already found Apriltags with IDs: " +
-                                std::to_string(tag_id));
-
-                if (goal_active) {
-                    action_client.cancelGoal();
-                    goal_active = false;
-                }
-
-                if (detected_cubes.size() == received_tags.size()) {
-                    ROS_INFO("[Node B] All target tags detected. Task complete.");
-                    publishFeedback("The detection is finished. All Apriltags found.");
-                    sendCubePositionsToNodeA();
-                    ros::shutdown();
-                }
-            }
+            ROS_INFO_STREAM("Obj with ID: " << msg->detections.at(i).id[0]);
+            ROS_INFO_STREAM("Original pose:    ( " << pp.x << " , " << pp.y << " , " << pp.z << " )");
+            ROS_INFO_STREAM("Transformed pose: ( " << mp.x << " , " << mp.y << " , " << mp.z << " )");
         }
     }
 
-    geometry_msgs::PoseStamped transformPose(const geometry_msgs::PoseStamped& input_pose, const std::string& target_frame) {
-        geometry_msgs::PoseStamped output_pose;
-        try {
-            geometry_msgs::TransformStamped transform = tf_buffer.lookupTransform(
-                target_frame, input_pose.header.frame_id, ros::Time(0));
-            tf2::doTransform(input_pose, output_pose, transform);
-        } catch (tf2::TransformException& ex) {
-            ROS_WARN("Transform error: %s", ex.what());
-        }
-        return output_pose;
-    }
+/*
+ROS_INFO_STREAM("Orientation (quaternion):\n"
+                        "  x: " << q.x << "\n"
+                        "  y: " << q.y << "\n"
+                        "  z: " << q.z << "\n"
+                        "  w: " << q.w);
+*/
+        
+      
+
+
 
     void defineNavigationGoals() {
         geometry_msgs::PoseStamped goal1;
