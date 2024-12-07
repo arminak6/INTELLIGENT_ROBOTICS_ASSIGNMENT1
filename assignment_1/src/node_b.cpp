@@ -1,4 +1,3 @@
-
 #include "ros/ros.h"
 #include "std_msgs/Int32MultiArray.h"
 #include "std_msgs/String.h"
@@ -49,9 +48,9 @@ public:
         // Initialize service client
         send_positions_client = nh.serviceClient<assignment_1::SendCubePositions>("/node_a/send_cube_positions");
 
-        ROS_INFO("Waiting for move_base action server...");
+        //ROS_INFO("Waiting for move_base action server...");
         action_client.waitForServer();
-        ROS_INFO("Node B initialized and move_base is ready.");
+        //ROS_INFO("Node B initialized and move_base is ready.");
 
         // adjust camera
         bool success = adjustCameraAngle(-0.5);
@@ -72,7 +71,7 @@ public:
         HeadClient* head_client_ = new HeadClient("head_controller/follow_joint_trajectory", true);
         
         while(!head_client_->waitForServer(ros::Duration(5.0))){
-            ROS_INFO("Waiting for head controller action server to come up...");
+            //ROS_INFO("Waiting for head controller action server to come up...");
         }
 
         // moveCamera
@@ -104,9 +103,9 @@ public:
             if (result) {
                 // Check error code
                 if (result->error_code == control_msgs::FollowJointTrajectoryResult::SUCCESSFUL) {
-                    ROS_INFO("Movement completed successfully with no errors");
+                    //ROS_INFO("Movement completed successfully with no errors");
                 } else {
-                    ROS_WARN("Movement completed but with error code: %d", result->error_code);
+                    //ROS_WARN("Movement completed but with error code: %d", result->error_code);
                 }
             }
             delete head_client_;
@@ -162,7 +161,7 @@ private:
         }
         catch (cv_bridge::Exception& e)
         {
-            ROS_ERROR("cv_bridge exception: %s", e.what());
+            //ROS_ERROR("cv_bridge exception: %s", e.what());
             return;
         }
 
@@ -209,6 +208,16 @@ private:
             // Get centroid
             double x = centroids.at<double>(i, 0);
             double y = centroids.at<double>(i, 1);
+
+		    // Assume conversion function or mechanism here:
+		    geometry_msgs::PoseStamped newGoal;
+		    newGoal.header.frame_id = "map";  // Typically, you'd transform this
+		    newGoal.header.stamp = ros::Time::now();
+		    newGoal.pose.position.x = x;  // Placeholder: Convert x appropriately
+		    newGoal.pose.position.y = y;  // Placeholder: Convert y appropriately
+		    newGoal.pose.orientation.w = 1.0;  // No rotation
+
+		    navigation_goals.push_back(newGoal);
 
             // Draw centroid on visualization
             cv::circle(output, cv::Point(x, y), 5, cv::Scalar(0, 255, 0), -1);
@@ -266,9 +275,9 @@ private:
     void depthImageCallback(const sensor_msgs::ImageConstPtr& msg) {
         try {
             latest_depth_image = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::TYPE_16UC1)->image;
-            ROS_INFO("[Node B] Received depth image.");
+            //ROS_INFO("[Node B] Received depth image.");
         } catch (cv_bridge::Exception& e) {
-            ROS_ERROR("cv_bridge exception: %s", e.what());
+            //ROS_ERROR("cv_bridge exception: %s", e.what());
         }
     }
 
@@ -308,9 +317,9 @@ private:
             const auto& mp = pos_out.pose.position;
             const auto& mo = pos_out.pose.orientation;
 
-            ROS_INFO_STREAM("Obj with ID: " << msg->detections.at(i).id[0]);
-            ROS_INFO_STREAM("Original pose:    ( " << pp.x << " , " << pp.y << " , " << pp.z << " )");
-            ROS_INFO_STREAM("Transformed pose: ( " << mp.x << " , " << mp.y << " , " << mp.z << " )");
+            //ROS_INFO_STREAM("Obj with ID: " << msg->detections.at(i).id[0]);
+            //ROS_INFO_STREAM("Original pose:    ( " << pp.x << " , " << pp.y << " , " << pp.z << " )");
+            //ROS_INFO_STREAM("Transformed pose: ( " << mp.x << " , " << mp.y << " , " << mp.z << " )");
         }
     }
 
@@ -375,27 +384,50 @@ ROS_INFO_STREAM("Orientation (quaternion):\n"
             boost::bind(&NodeB::feedbackCallback, this, _1));
     }
 
-    void doneCallback(const actionlib::SimpleClientGoalState& state,
-                      const move_base_msgs::MoveBaseResult::ConstPtr& result) {
-        goal_active = false;
-        if (state == actionlib::SimpleClientGoalState::SUCCEEDED) {
-            ROS_INFO("[Node B] Reached goal successfully.");
-            current_goal_index++;
-            publishFeedback("The robot has reached its goal.");
-        } else {
-            ROS_WARN("[Node B] Failed to reach goal. Retrying...");
-            publishFeedback("The robot failed to reach its goal. Retrying...");
-        }
-    }
+	void doneCallback(const actionlib::SimpleClientGoalState& state,
+		              const move_base_msgs::MoveBaseResult::ConstPtr& result) {
+		goal_active = false;
+		if (state == actionlib::SimpleClientGoalState::SUCCEEDED) {
+		    ROS_INFO("[Node B] Reached goal successfully.");
+		    current_goal_index++;
+		    publishFeedback("The robot has reached its goal.");
+		    adjustHeadAngle(-0.5);  // Adjust head by -30 degrees (radians)
+		} else {
+		    ROS_WARN("[Node B] Failed to reach goal. Retrying...");
+		    publishFeedback("The robot failed to reach its goal. Retrying...");
+		}
+	}
+
+	bool adjustHeadAngle(double tilt_angle_radians) {
+		HeadClient head_client("head_controller/follow_joint_trajectory", true);
+		head_client.waitForServer();
+		control_msgs::FollowJointTrajectoryGoal goal;
+		goal.trajectory.joint_names.push_back("head_tilt_joint");  // Assuming the joint's name
+		trajectory_msgs::JointTrajectoryPoint point;
+		point.positions.push_back(tilt_angle_radians);
+		point.time_from_start = ros::Duration(1);
+		goal.trajectory.points.push_back(point);
+		head_client.sendGoal(goal);
+		bool finished_before_timeout = head_client.waitForResult(ros::Duration(5.0));
+		if (finished_before_timeout) {
+		    actionlib::SimpleClientGoalState state = head_client.getState();
+		    ROS_INFO("Head movement completed: %s", state.toString().c_str());
+		    return true;
+		} else {
+		    ROS_ERROR("Failed to adjust head angle.");
+		    return false;
+		}
+	}
+
 
     void activeCallback() {
         ROS_INFO("[Node B] Goal is now active.");
     }
 
     void feedbackCallback(const move_base_msgs::MoveBaseFeedback::ConstPtr& feedback) {
-        ROS_INFO("[Node B] Feedback: Current position (x: %f, y: %f)",
-                 feedback->base_position.pose.position.x,
-                 feedback->base_position.pose.position.y);
+        //ROS_INFO("[Node B] Feedback: Current position (x: %f, y: %f)",
+        //         feedback->base_position.pose.position.x,
+        //         feedback->base_position.pose.position.y);
     }
 
     void sendCubePositionsToNodeA() {
@@ -441,3 +473,4 @@ int main(int argc, char** argv) {
     ros::spin();
     return 0;
 }
+
