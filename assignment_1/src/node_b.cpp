@@ -153,93 +153,286 @@ private:
     // -----------------------------------------------------------------
 
     void imageCallback(const sensor_msgs::ImageConstPtr& msg)
+{
+    cv_bridge::CvImagePtr cv_ptr;
+    try
     {
-        cv_bridge::CvImagePtr cv_ptr;
-        try
-        {
-            cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
-        }
-        catch (cv_bridge::Exception& e)
-        {
-            //ROS_ERROR("cv_bridge exception: %s", e.what());
-            return;
-        }
-
-        // Convert BGR to HSV
-        cv::Mat hsv;
-        cv::cvtColor(cv_ptr->image, hsv, cv::COLOR_BGR2HSV);
-
-        // Define range for red color in HSV
-        cv::Mat mask1, mask2;
-        cv::Scalar lower_red1(0, 100, 100);
-        cv::Scalar upper_red1(10, 255, 255);
-        cv::Scalar lower_red2(160, 100, 100);
-        cv::Scalar upper_red2(180, 255, 255);
-
-        // Create masks for both red ranges
-        cv::inRange(hsv, lower_red1, upper_red1, mask1);
-        cv::inRange(hsv, lower_red2, upper_red2, mask2);
-
-        // Combine the masks
-        cv::Mat red_mask = mask1 | mask2;
-
-        // Apply morphological operations
-        int kernel_size = 5;
-        cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, 
-                                                 cv::Size(kernel_size, kernel_size));
-        cv::morphologyEx(red_mask, red_mask, cv::MORPH_OPEN, kernel);
-        cv::morphologyEx(red_mask, red_mask, cv::MORPH_CLOSE, kernel);
-
-        // Connected components analysis
-        cv::Mat labels, stats, centroids;
-        int num_labels = cv::connectedComponentsWithStats(red_mask, labels, stats, centroids, 8, CV_32S);
-
-        // Create a colored visualization
-        cv::Mat output = cv_ptr->image.clone();
-        
-        // Process each detected component
-        for(int i = 1; i < num_labels; i++) // Start from 1 to skip background
-        {
-            int area = stats.at<int>(i, cv::CC_STAT_AREA);
-            
-            // Filter small components
-            if(area < MIN_AREA) continue;
-
-            // Get centroid
-            double x = centroids.at<double>(i, 0);
-            double y = centroids.at<double>(i, 1);
-
-		    // Assume conversion function or mechanism here:
-		    geometry_msgs::PoseStamped newGoal;
-		    newGoal.header.frame_id = "map";  // Typically, you'd transform this
-		    newGoal.header.stamp = ros::Time::now();
-		    newGoal.pose.position.x = x;  // Placeholder: Convert x appropriately
-		    newGoal.pose.position.y = y;  // Placeholder: Convert y appropriately
-		    newGoal.pose.orientation.w = 1.0;  // No rotation
-
-		    navigation_goals.push_back(newGoal);
-
-            // Draw centroid on visualization
-            cv::circle(output, cv::Point(x, y), 5, cv::Scalar(0, 255, 0), -1);
-            
-            // Create and publish centroid message
-            geometry_msgs::PointStamped centroid_msg;
-            centroid_msg.header = msg->header;
-            centroid_msg.point.x = x;
-            centroid_msg.point.y = y;
-            centroid_msg.point.z = 0.0; // Since this is 2D image coordinates
-            
-            centroids_pub_.publish(centroid_msg);
-            
-            // Print centroid information
-            ROS_INFO("Cube %d centroid: (%.2f, %.2f), Area: %d", i, x, y, area);
-        }
-
-        // Publish the visualization
-        sensor_msgs::ImagePtr vis_msg = 
-            cv_bridge::CvImage(msg->header, "bgr8", output).toImageMsg();
-        mask_pub.publish(vis_msg);
+        cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
     }
+    catch (cv_bridge::Exception& e)
+    {
+        ROS_ERROR("cv_bridge exception: %s", e.what());
+        return;
+    }
+
+    // Check if depth image is available
+    if (latest_depth_image.empty()) {
+        ROS_WARN("Depth image not available for processing");
+        return;
+    }
+{
+		cv_bridge::CvImagePtr cv_ptr;
+		try
+		{
+		    cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
+		}
+		catch (cv_bridge::Exception& e)
+		{
+		    ROS_ERROR("cv_bridge exception: %s", e.what());
+		    return;
+		}
+
+		// Check if depth image is available
+		if (latest_depth_image.empty()) {
+		    ROS_WARN("Depth image not available for processing");
+		    return;
+		}
+
+		// Convert to HSV for robust color detection
+		cv::Mat hsv;
+		cv::cvtColor(cv_ptr->image, hsv, cv::COLOR_BGR2HSV);
+
+		// Improved Red Color Mask
+		cv::Mat red_mask = createRobustRedMask(hsv);
+
+		// Connected components analysis
+		cv::Mat labels, stats, centroids;
+		int num_labels = cv::connectedComponentsWithStats(red_mask, labels, stats, centroids, 8, CV_32S);
+
+		// Vector to store valid cube poses
+		std::vector<geometry_msgs::PoseStamped> detected_cubes;
+
+		// Process each detected component
+		for(int i = 1; i < num_labels; i++) // Start from 1 to skip background
+		{
+		    // Robust cube filtering
+		    if (!isValidCube(stats, i)) continue;
+
+		    // Get centroid coordinates
+		    double x_pixel = centroids.at<double>(i, 0);
+		    double y_pixel = centroids.at<double>(i, 1);
+
+		    // Depth and 3D Position Estimation
+		    geometry_msgs::PoseStamped cube_pose = estimateCubePose(x_pixel, y_pixel);
+		    
+		    if (cube_pose.header.frame_id.empty()) {
+		        // Invalid pose estimation
+		        continue;
+		    }
+
+		    // Add to detected cubes
+		    detected_cubes.push_back(cube_pose);
+
+		    // Visualization
+		    cv::circle(cv_ptr->image, cv::Point(x_pixel, y_pixel), 5, cv::Scalar(0, 255, 0), -1);
+		}
+
+		// Publish detected cube positions
+		publishDetectedCubes(detected_cubes);
+
+		// Publish visualization
+		sensor_msgs::ImagePtr vis_msg = 
+		    cv_bridge::CvImage(msg->header, "bgr8", cv_ptr->image).toImageMsg();
+		mask_pub.publish(vis_msg);
+	}
+    // Convert to HSV for robust color detection
+    cv::Mat hsv;
+    cv::cvtColor(cv_ptr->image, hsv, cv::COLOR_BGR2HSV);
+
+    // Improved Red Color Mask
+    cv::Mat red_mask = createRobustRedMask(hsv);
+
+    // Connected components analysis
+    cv::Mat labels, stats, centroids;
+    int num_labels = cv::connectedComponentsWithStats(red_mask, labels, stats, centroids, 8, CV_32S);
+
+    // Vector to store valid cube poses
+    std::vector<geometry_msgs::PoseStamped> detected_cubes;
+
+    // Process each detected component
+    for(int i = 1; i < num_labels; i++) // Start from 1 to skip background
+    {
+        // Robust cube filtering
+        if (!isValidCube(stats, i)) continue;
+
+        // Get centroid coordinates
+        double x_pixel = centroids.at<double>(i, 0);
+        double y_pixel = centroids.at<double>(i, 1);
+
+        // Depth and 3D Position Estimation
+        geometry_msgs::PoseStamped cube_pose = estimateCubePose(x_pixel, y_pixel);
+        
+        if (cube_pose.header.frame_id.empty()) {
+            // Invalid pose estimation
+            continue;
+        }
+
+        // Add to detected cubes
+        detected_cubes.push_back(cube_pose);
+
+        // Visualization
+        cv::circle(cv_ptr->image, cv::Point(x_pixel, y_pixel), 5, cv::Scalar(0, 255, 0), -1);
+    }
+
+    // Publish detected cube positions
+    publishDetectedCubes(detected_cubes);
+
+    // Publish visualization
+    sensor_msgs::ImagePtr vis_msg = 
+        cv_bridge::CvImage(msg->header, "bgr8", cv_ptr->image).toImageMsg();
+    mask_pub.publish(vis_msg);
+}
+
+cv::Mat createRobustRedMask(const cv::Mat& hsv)
+{
+    cv::Mat mask1, mask2, mask3;
+    
+    // Define red color ranges in HSV
+    cv::Scalar lower_red1(0, 100, 100);
+    cv::Scalar upper_red1(10, 255, 255);
+    cv::Scalar lower_red2(160, 100, 100);
+    cv::Scalar upper_red2(180, 255, 255);
+    
+    // Create masks for red ranges
+    cv::inRange(hsv, lower_red1, upper_red1, mask1);
+    cv::inRange(hsv, lower_red2, upper_red2, mask2);
+    
+    // Combine red masks
+    cv::Mat red_mask = mask1 | mask2;
+    
+    // Morphological operations for noise reduction
+    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
+    cv::morphologyEx(red_mask, red_mask, cv::MORPH_OPEN, kernel);
+    cv::morphologyEx(red_mask, red_mask, cv::MORPH_CLOSE, kernel);
+    
+    return red_mask;
+}
+
+bool isValidCube(const cv::Mat& stats, int label)
+{
+    // Cube filtering parameters
+    const int MIN_AREA = 100;     // Minimum pixel area
+    const int MAX_AREA = 5000;    // Maximum pixel area
+    const double MAX_ASPECT_RATIO_DEVIATION = 0.5;
+    
+    int area = stats.at<int>(label, cv::CC_STAT_AREA);
+    int width = stats.at<int>(label, cv::CC_STAT_WIDTH);
+    int height = stats.at<int>(label, cv::CC_STAT_HEIGHT);
+    
+    // Area filtering
+    if (area < MIN_AREA || area > MAX_AREA) {
+        return false;
+    }
+    
+    // Aspect ratio check (expecting roughly square shape)
+    double aspect_ratio = static_cast<double>(width) / height;
+    if (std::abs(aspect_ratio - 1.0) > MAX_ASPECT_RATIO_DEVIATION) {
+        return false;
+    }
+    
+    return true;
+}
+
+geometry_msgs::PoseStamped estimateCubePose(double x_pixel, double y_pixel)
+{
+    geometry_msgs::PoseStamped cube_pose;
+    
+    // Validate pixel coordinates
+    if (x_pixel < 0 || y_pixel < 0 || 
+        x_pixel >= latest_depth_image.cols || 
+        y_pixel >= latest_depth_image.rows) {
+        ROS_WARN("Invalid pixel coordinates");
+        return cube_pose;
+    }
+    
+    // Get depth value
+    uint16_t depth_value = latest_depth_image.at<uint16_t>(y_pixel, x_pixel);
+    
+    // Filter out invalid depth readings
+    const uint16_t MIN_DEPTH = 500;   // 0.5 meters
+    const uint16_t MAX_DEPTH = 5000;  // 5 meters
+    if (depth_value < MIN_DEPTH || depth_value > MAX_DEPTH) {
+        ROS_WARN("Depth value out of valid range");
+        return cube_pose;
+    }
+    
+    // Convert depth to meters
+    double depth_meters = depth_value * 0.001; // Assuming millimeters
+    
+    // Camera intrinsic parameters (example values, replace with your camera's calibration)
+    const double fx = 525.0;  // Focal length x
+    const double fy = 525.0;  // Focal length y
+    const double cx = 319.5;  // Principal point x
+    const double cy = 239.5;  // Principal point y
+    
+    // Convert pixel coordinates to 3D camera frame
+    double x_camera = (x_pixel - cx) * depth_meters / fx;
+    double y_camera = (y_pixel - cy) * depth_meters / fy;
+    double z_camera = depth_meters;
+    
+    // Transform to map frame
+    try {
+        geometry_msgs::PoseStamped camera_pose;
+        camera_pose.header.frame_id = "camera_depth_optical_frame";
+        camera_pose.header.stamp = ros::Time::now();
+        camera_pose.pose.position.x = x_camera;
+        camera_pose.pose.position.y = y_camera;
+        camera_pose.pose.position.z = z_camera;
+        camera_pose.pose.orientation.w = 1.0;
+        
+        // Transform to map frame
+        geometry_msgs::PoseStamped map_pose = 
+            tf_buffer.transform(camera_pose, "map", ros::Duration(1.0));
+        
+        return map_pose;
+    }
+    catch (tf2::TransformException& ex) {
+        ROS_ERROR("Pose transformation failed: %s", ex.what());
+        return cube_pose;
+    }
+}
+
+void publishDetectedCubes(const std::vector<geometry_msgs::PoseStamped>& cubes)
+{
+    // Publish cube positions as a PoseArray
+    geometry_msgs::PoseArray pose_array;
+    pose_array.header.frame_id = "map";
+    pose_array.header.stamp = ros::Time::now();
+    
+    for (const auto& cube : cubes) {
+        pose_array.poses.push_back(cube.pose);
+        
+        // Optionally add to navigation goals
+        addUniqueNavigationGoal(cube);
+        
+        ROS_INFO("Detected Cube at (x: %.2f, y: %.2f, z: %.2f)", 
+                 cube.pose.position.x, 
+                 cube.pose.position.y, 
+                 cube.pose.position.z);
+    }
+    
+    // Publish pose array
+    cube_positions_publisher.publish(pose_array);
+}
+
+void addUniqueNavigationGoal(const geometry_msgs::PoseStamped& new_goal)
+{
+    const double MIN_GOAL_DISTANCE = 0.5; // meters
+    
+    // Check if goal is too close to existing goals
+    auto is_too_close = [&](const geometry_msgs::PoseStamped& existing_goal) {
+        double dx = new_goal.pose.position.x - existing_goal.pose.position.x;
+        double dy = new_goal.pose.position.y - existing_goal.pose.position.y;
+        return std::sqrt(dx*dx + dy*dy) < MIN_GOAL_DISTANCE;
+    };
+    
+    // Check if goal already exists
+    auto exists = std::any_of(navigation_goals.begin(), navigation_goals.end(), is_too_close);
+    
+    if (!exists) {
+        navigation_goals.push_back(new_goal);
+    }
+}
 
 
     /// -----------------------------------------------------------------
@@ -473,4 +666,3 @@ int main(int argc, char** argv) {
     ros::spin();
     return 0;
 }
-
