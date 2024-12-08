@@ -37,6 +37,9 @@ public:
         feedback_publisher = nh.advertise<std_msgs::String>("/node_b/feedback", 10);
         cube_positions_publisher = nh.advertise<geometry_msgs::PoseArray>("/node_b/cube_positions", 10);
 
+        // Add a new subscriber for messages from Node A
+        node_a_numbers_subscriber = nh.subscribe("/node_a/numbers_topic", 10, &NodeB::nodeANumbersCallback, this);
+
         // Subscribe to RGB-D data
         rgb_image_subscriber = it.subscribe("/xtion/rgb/image_raw", 10, &NodeB::imageCallback, this); //&NodeB::rgbImageCallback
         depth_image_subscriber = it.subscribe("/xtion/depth/image_raw", 10, &NodeB::depthImageCallback, this);
@@ -127,6 +130,8 @@ private:
     ros::Publisher feedback_publisher;
     ros::Publisher cube_positions_publisher;
     ros::ServiceClient send_positions_client;
+    // Add a new subscriber member
+    ros::Subscriber node_a_numbers_subscriber;
 
     image_transport::ImageTransport it;
     image_transport::Subscriber rgb_image_subscriber;
@@ -140,6 +145,11 @@ private:
     tf2_ros::TransformListener tf_listener;
     MoveBaseClient action_client;
 
+    // Image data
+
+    ros::Time latest_rgb_timestamp;  // Timestamp of the latest RGB image
+    ros::Time latest_depth_timestamp;
+
     std::vector<int> received_tags;
     std::vector<geometry_msgs::PoseStamped> detected_cubes;
     std::vector<geometry_msgs::PoseStamped> navigation_goals;
@@ -149,6 +159,17 @@ private:
 
     size_t current_goal_index = 0;
     bool goal_active = false;
+
+
+
+	//-----------------------------------------------------------------
+    // Create a callback function to handle numbers from Node A
+    void nodeANumbersCallback(const std_msgs::Int32MultiArray::ConstPtr& msg) {
+        ROS_INFO("Received numbers from Node A:");
+        for (size_t i = 0; i < msg->data.size(); ++i) {
+            ROS_INFO("Number %zu: %d", i + 1, msg->data[i]);
+        }
+    }
 
     // -----------------------------------------------------------------
 
@@ -456,23 +477,25 @@ void addUniqueNavigationGoal(const geometry_msgs::PoseStamped& new_goal)
 
 
 
-    void rgbImageCallback(const sensor_msgs::ImageConstPtr& msg) {
-        try {
-            latest_rgb_image = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8)->image;
-            //ROS_INFO("[Node B] Received RGB image.");
-        } catch (cv_bridge::Exception& e) {
-            ROS_ERROR("cv_bridge exception: %s", e.what());
-        }
-    }
+	void rgbImageCallback(const sensor_msgs::ImageConstPtr& msg) {
+		try {
+		    cv_bridge::CvImagePtr cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
+		    latest_rgb_image = cv_ptr->image;
+		    latest_rgb_timestamp = msg->header.stamp; // Store timestamp
+		} catch (cv_bridge::Exception& e) {
+		    ROS_ERROR("cv_bridge exception: %s", e.what());
+		}
+	}
 
-    void depthImageCallback(const sensor_msgs::ImageConstPtr& msg) {
-        try {
-            latest_depth_image = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::TYPE_16UC1)->image;
-            //ROS_INFO("[Node B] Received depth image.");
-        } catch (cv_bridge::Exception& e) {
-            //ROS_ERROR("cv_bridge exception: %s", e.what());
-        }
-    }
+	void depthImageCallback(const sensor_msgs::ImageConstPtr& msg) {
+		try {
+		    cv_bridge::CvImagePtr cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::TYPE_16UC1);
+		    latest_depth_image = cv_ptr->image;
+		    latest_depth_timestamp = msg->header.stamp; // Store timestamp
+		} catch (cv_bridge::Exception& e) {
+		    ROS_ERROR("cv_bridge exception: %s", e.what());
+		}
+	}
 
     void tagDetectionsCallback(const apriltag_ros::AprilTagDetectionArray::ConstPtr& msg) {
         std::string target_frame = "map";
@@ -539,6 +562,7 @@ ROS_INFO_STREAM("Orientation (quaternion):\n"
         geometry_msgs::PoseStamped goal2 = goal1;
         goal2.pose.position.x = 10.5;
         goal2.pose.position.y = -3.7;
+
 
         geometry_msgs::PoseStamped goal3 = goal1;
         goal3.pose.position.x = 9.6;
