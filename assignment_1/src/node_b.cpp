@@ -132,7 +132,9 @@ private:
     ros::Subscriber target_ids_subscriber;
     ros::Publisher feedback_publisher;
     ros::Publisher cube_positions_publisher;
-    ros::ServiceClient send_positions_client;
+    ros::ServiceClient send_positions_client;	
+	std::set<int> seen_tags;
+	
 																																																																																																											              			
 
 	ros::Publisher cmd_vel_publisher;
@@ -317,58 +319,74 @@ private:
         }
     }
 
-    void tagDetectionsCallback(const apriltag_ros::AprilTagDetectionArray::ConstPtr& msg) {
-    	publishFeedback("The robot is scanning for AprilTags.");
-        std::string target_frame = "map";
-        std::string source_frame = msg->header.frame_id;
+	   void tagDetectionsCallback(const apriltag_ros::AprilTagDetectionArray::ConstPtr& msg) {
+		publishFeedback("The robot is scanning for AprilTags.");
+		std::string target_frame = "map";
+		std::string source_frame = msg->header.frame_id;
 
-        tf2_ros::Buffer tfBuffer;
-        tf2_ros::TransformListener tfListener(tfBuffer);
+		tf2_ros::Buffer tfBuffer;
+		tf2_ros::TransformListener tfListener(tfBuffer);
 
-        while(!tfBuffer.canTransform(target_frame, source_frame, ros::Time(0)))
-            ros::Duration(0.5).sleep();
-
-        geometry_msgs::TransformStamped transformed = tfBuffer.lookupTransform(target_frame, source_frame, ros::Time(0), ros::Duration(1.0));
-        
-        //Transform available
-        geometry_msgs::PoseStamped pos_in;
-        geometry_msgs::PoseStamped pos_out;
-
-		for (int i = 0; i < msg->detections.size(); ++i) {
-			pos_in.header.frame_id = msg->detections.at(i).pose.header.frame_id;
-			pos_in.pose.position.x = msg->detections.at(i).pose.pose.pose.position.x;
-			pos_in.pose.position.y = msg->detections.at(i).pose.pose.pose.position.y;
-			pos_in.pose.position.z = msg->detections.at(i).pose.pose.pose.position.z;
-			pos_in.pose.orientation.x = msg->detections.at(i).pose.pose.pose.orientation.x;
-			pos_in.pose.orientation.y = msg->detections.at(i).pose.pose.pose.orientation.y;
-			pos_in.pose.orientation.z = msg->detections.at(i).pose.pose.pose.orientation.z;
-			pos_in.pose.orientation.w = msg->detections.at(i).pose.pose.pose.orientation.w;
-
-			tf2::doTransform(pos_in, pos_out, transformed);
-
-			// Get the ID of the detected object
-			int detected_id = msg->detections.at(i).id[0];
-
-			// Check if the ID is in the received_tags list
-			if (std::find(received_tags.begin(), received_tags.end(), detected_id) != received_tags.end()) {
-				ROS_INFO_STREAM("Detected ID " << detected_id << " is in the received list.");
-			} else {
-				ROS_WARN_STREAM("Detected ID " << detected_id << " is NOT in the received list.");
-			}
-
-			// Original pose
-			const auto& pp = pos_in.pose.position;
-			const auto& po = pos_in.pose.orientation;
-
-			// Transformed pose
-			const auto& mp = pos_out.pose.position;
-			const auto& mo = pos_out.pose.orientation;
-
-			ROS_INFO_STREAM("Original pose:    ( " << pp.x << " , " << pp.y << " , " << pp.z << " )");
-			ROS_INFO_STREAM("Transformed pose: ( " << mp.x << " , " << mp.y << " , " << mp.z << " )");
+		while (!tfBuffer.canTransform(target_frame, source_frame, ros::Time(0))) {
+		    ros::Duration(0.5).sleep();
 		}
 
-    }
+		geometry_msgs::TransformStamped transformed = tfBuffer.lookupTransform(target_frame, source_frame, ros::Time(0), ros::Duration(1.0));
+		geometry_msgs::PoseStamped pos_in;
+		geometry_msgs::PoseStamped pos_out;
+
+		for (int i = 0; i < msg->detections.size(); ++i) {
+		    pos_in.header.frame_id = msg->detections.at(i).pose.header.frame_id;
+		    pos_in.pose.position.x = msg->detections.at(i).pose.pose.pose.position.x;
+		    pos_in.pose.position.y = msg->detections.at(i).pose.pose.pose.position.y;
+		    pos_in.pose.position.z = msg->detections.at(i).pose.pose.pose.position.z;
+		    pos_in.pose.orientation.x = msg->detections.at(i).pose.pose.pose.orientation.x;
+		    pos_in.pose.orientation.y = msg->detections.at(i).pose.pose.pose.orientation.y;
+		    pos_in.pose.orientation.z = msg->detections.at(i).pose.pose.pose.orientation.z;
+		    pos_in.pose.orientation.w = msg->detections.at(i).pose.pose.pose.orientation.w;
+
+		    tf2::doTransform(pos_in, pos_out, transformed);
+
+		    // Get the ID of the detected object
+		    int detected_id = msg->detections.at(i).id[0];
+
+		    // Check if the ID is in the received_tags list
+		    if (std::find(received_tags.begin(), received_tags.end(), detected_id) != received_tags.end()) {
+		        ROS_INFO_STREAM("Detected ID " << detected_id << " is in the received list.");
+		    } else {
+		        ROS_WARN_STREAM("Detected ID " << detected_id << " is NOT in the received list.");
+		    }
+
+		    // Check if this tag ID has been seen before
+		    if (seen_tags.find(detected_id) != seen_tags.end()) {
+		        ROS_INFO_STREAM("The robot has already found AprilTag with ID: " << detected_id);
+		    } else {
+		        // First time seeing this tag ID
+		        seen_tags.insert(detected_id);
+		        ROS_INFO_STREAM("The robot has found a new AprilTag with ID: " << detected_id);
+		    }
+
+		    // Original pose
+		    const auto& pp = pos_in.pose.position;
+		    const auto& po = pos_in.pose.orientation;
+
+		    // Transformed pose
+		    const auto& mp = pos_out.pose.position;
+		    const auto& mo = pos_out.pose.orientation;
+
+		    ROS_INFO_STREAM("Original pose:    ( " << pp.x << " , " << pp.y << " , " << pp.z << " )");
+		    ROS_INFO_STREAM("Transformed pose: ( " << mp.x << " , " << mp.y << " , " << mp.z << " )");
+		}
+
+		// Publish feedback about all previously found AprilTag IDs
+		std::ostringstream oss;
+		oss << "The robot has already found AprilTags with IDs: ";
+		for (int id : seen_tags) {
+		    oss << id << " ";
+		}
+		publishFeedback(oss.str());
+	}
+
 
 /*
 ROS_INFO_STREAM("Orientation (quaternion):\n"
