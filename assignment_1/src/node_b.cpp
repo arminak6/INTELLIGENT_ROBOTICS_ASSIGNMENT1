@@ -1,3 +1,4 @@
+
 #include "ros/ros.h"
 #include "std_msgs/Int32MultiArray.h"
 #include "std_msgs/String.h"
@@ -37,9 +38,6 @@ public:
         feedback_publisher = nh.advertise<std_msgs::String>("/node_b/feedback", 10);
         cube_positions_publisher = nh.advertise<geometry_msgs::PoseArray>("/node_b/cube_positions", 10);
 
-        // Add a new subscriber for messages from Node A
-        node_a_numbers_subscriber = nh.subscribe("/node_a/numbers_topic", 10, &NodeB::nodeANumbersCallback, this);
-
         // Subscribe to RGB-D data
         rgb_image_subscriber = it.subscribe("/xtion/rgb/image_raw", 10, &NodeB::imageCallback, this); //&NodeB::rgbImageCallback
         depth_image_subscriber = it.subscribe("/xtion/depth/image_raw", 10, &NodeB::depthImageCallback, this);
@@ -51,9 +49,14 @@ public:
         // Initialize service client
         send_positions_client = nh.serviceClient<assignment_1::SendCubePositions>("/node_a/send_cube_positions");
 
-        //ROS_INFO("Waiting for move_base action server...");
+		cmd_vel_publisher = nh.advertise<geometry_msgs::Twist>("/cmd_vel", 10);	
+		feedback_publisher = nh.advertise<std_msgs::String>("node_b_feedback", 10);
+	
+
+
+        ROS_INFO("Waiting for move_base action server...");
         action_client.waitForServer();
-        //ROS_INFO("Node B initialized and move_base is ready.");
+        ROS_INFO("Node B initialized and move_base is ready.");
 
         // adjust camera
         bool success = adjustCameraAngle(-0.5);
@@ -74,7 +77,7 @@ public:
         HeadClient* head_client_ = new HeadClient("head_controller/follow_joint_trajectory", true);
         
         while(!head_client_->waitForServer(ros::Duration(5.0))){
-            //ROS_INFO("Waiting for head controller action server to come up...");
+            ROS_INFO("Waiting for head controller action server to come up...");
         }
 
         // moveCamera
@@ -130,8 +133,9 @@ private:
     ros::Publisher feedback_publisher;
     ros::Publisher cube_positions_publisher;
     ros::ServiceClient send_positions_client;
-    // Add a new subscriber member
-    ros::Subscriber node_a_numbers_subscriber;
+																																																																																																											              			
+
+	ros::Publisher cmd_vel_publisher;
 
     image_transport::ImageTransport it;
     image_transport::Subscriber rgb_image_subscriber;
@@ -145,11 +149,6 @@ private:
     tf2_ros::TransformListener tf_listener;
     MoveBaseClient action_client;
 
-    // Image data
-
-    ros::Time latest_rgb_timestamp;  // Timestamp of the latest RGB image
-    ros::Time latest_depth_timestamp;
-
     std::vector<int> received_tags;
     std::vector<geometry_msgs::PoseStamped> detected_cubes;
     std::vector<geometry_msgs::PoseStamped> navigation_goals;
@@ -160,303 +159,126 @@ private:
     size_t current_goal_index = 0;
     bool goal_active = false;
 
-
-
-	//-----------------------------------------------------------------
-    // Create a callback function to handle numbers from Node A
-    void nodeANumbersCallback(const std_msgs::Int32MultiArray::ConstPtr& msg) {
-        ROS_INFO("Received numbers from Node A:");
-        for (size_t i = 0; i < msg->data.size(); ++i) {
-            ROS_INFO("Number %zu: %d", i + 1, msg->data[i]);
-        }
-    }
-
     // -----------------------------------------------------------------
 
     void imageCallback(const sensor_msgs::ImageConstPtr& msg)
-{
-    cv_bridge::CvImagePtr cv_ptr;
-    try
     {
-        cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
-    }
-    catch (cv_bridge::Exception& e)
-    {
-        ROS_ERROR("cv_bridge exception: %s", e.what());
-        return;
-    }
-
-    // Check if depth image is available
-    if (latest_depth_image.empty()) {
-        ROS_WARN("Depth image not available for processing");
-        return;
-    }
-{
-		cv_bridge::CvImagePtr cv_ptr;
-		try
-		{
-		    cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
-		}
-		catch (cv_bridge::Exception& e)
-		{
-		    ROS_ERROR("cv_bridge exception: %s", e.what());
-		    return;
-		}
-
-		// Check if depth image is available
-		if (latest_depth_image.empty()) {
-		    ROS_WARN("Depth image not available for processing");
-		    return;
-		}
-
-		// Convert to HSV for robust color detection
-		cv::Mat hsv;
-		cv::cvtColor(cv_ptr->image, hsv, cv::COLOR_BGR2HSV);
-
-		// Improved Red Color Mask
-		cv::Mat red_mask = createRobustRedMask(hsv);
-
-		// Connected components analysis
-		cv::Mat labels, stats, centroids;
-		int num_labels = cv::connectedComponentsWithStats(red_mask, labels, stats, centroids, 8, CV_32S);
-
-		// Vector to store valid cube poses
-		std::vector<geometry_msgs::PoseStamped> detected_cubes;
-
-		// Process each detected component
-		for(int i = 1; i < num_labels; i++) // Start from 1 to skip background
-		{
-		    // Robust cube filtering
-		    if (!isValidCube(stats, i)) continue;
-
-		    // Get centroid coordinates
-		    double x_pixel = centroids.at<double>(i, 0);
-		    double y_pixel = centroids.at<double>(i, 1);
-
-		    // Depth and 3D Position Estimation
-		    geometry_msgs::PoseStamped cube_pose = estimateCubePose(x_pixel, y_pixel);
-		    
-		    if (cube_pose.header.frame_id.empty()) {
-		        // Invalid pose estimation
-		        continue;
-		    }
-
-		    // Add to detected cubes
-		    detected_cubes.push_back(cube_pose);
-
-		    // Visualization
-		    cv::circle(cv_ptr->image, cv::Point(x_pixel, y_pixel), 5, cv::Scalar(0, 255, 0), -1);
-		}
-
-		// Publish detected cube positions
-		publishDetectedCubes(detected_cubes);
-
-		// Publish visualization
-		sensor_msgs::ImagePtr vis_msg = 
-		    cv_bridge::CvImage(msg->header, "bgr8", cv_ptr->image).toImageMsg();
-		mask_pub.publish(vis_msg);
-	}
-    // Convert to HSV for robust color detection
-    cv::Mat hsv;
-    cv::cvtColor(cv_ptr->image, hsv, cv::COLOR_BGR2HSV);
-
-    // Improved Red Color Mask
-    cv::Mat red_mask = createRobustRedMask(hsv);
-
-    // Connected components analysis
-    cv::Mat labels, stats, centroids;
-    int num_labels = cv::connectedComponentsWithStats(red_mask, labels, stats, centroids, 8, CV_32S);
-
-    // Vector to store valid cube poses
-    std::vector<geometry_msgs::PoseStamped> detected_cubes;
-
-    // Process each detected component
-    for(int i = 1; i < num_labels; i++) // Start from 1 to skip background
-    {
-        // Robust cube filtering
-        if (!isValidCube(stats, i)) continue;
-
-        // Get centroid coordinates
-        double x_pixel = centroids.at<double>(i, 0);
-        double y_pixel = centroids.at<double>(i, 1);
-
-        // Depth and 3D Position Estimation
-        geometry_msgs::PoseStamped cube_pose = estimateCubePose(x_pixel, y_pixel);
-        
-        if (cube_pose.header.frame_id.empty()) {
-            // Invalid pose estimation
-            continue;
+        cv_bridge::CvImagePtr cv_ptr;
+        try
+        {
+            cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
+        }
+        catch (cv_bridge::Exception& e)
+        {
+            //ROS_ERROR("cv_bridge exception: %s", e.what());
+            return;
         }
 
-        // Add to detected cubes
-        detected_cubes.push_back(cube_pose);
+        // Convert BGR to HSV
+        cv::Mat hsv;
+        cv::cvtColor(cv_ptr->image, hsv, cv::COLOR_BGR2HSV);
 
-        // Visualization
-        cv::circle(cv_ptr->image, cv::Point(x_pixel, y_pixel), 5, cv::Scalar(0, 255, 0), -1);
-    }
+        // Define range for red color in HSV
+        cv::Mat mask1, mask2;
+        cv::Scalar lower_red1(0, 100, 100);
+        cv::Scalar upper_red1(10, 255, 255);
+        cv::Scalar lower_red2(160, 100, 100);
+        cv::Scalar upper_red2(180, 255, 255);
 
-    // Publish detected cube positions
-    publishDetectedCubes(detected_cubes);
+        // Create masks for both red ranges
+        cv::inRange(hsv, lower_red1, upper_red1, mask1);
+        cv::inRange(hsv, lower_red2, upper_red2, mask2);
 
-    // Publish visualization
-    sensor_msgs::ImagePtr vis_msg = 
-        cv_bridge::CvImage(msg->header, "bgr8", cv_ptr->image).toImageMsg();
-    mask_pub.publish(vis_msg);
-}
+        // Combine the masks
+        cv::Mat red_mask = mask1 | mask2;
 
-cv::Mat createRobustRedMask(const cv::Mat& hsv)
-{
-    cv::Mat mask1, mask2, mask3;
-    
-    // Define red color ranges in HSV
-    cv::Scalar lower_red1(0, 100, 100);
-    cv::Scalar upper_red1(10, 255, 255);
-    cv::Scalar lower_red2(160, 100, 100);
-    cv::Scalar upper_red2(180, 255, 255);
-    
-    // Create masks for red ranges
-    cv::inRange(hsv, lower_red1, upper_red1, mask1);
-    cv::inRange(hsv, lower_red2, upper_red2, mask2);
-    
-    // Combine red masks
-    cv::Mat red_mask = mask1 | mask2;
-    
-    // Morphological operations for noise reduction
-    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
-    cv::morphologyEx(red_mask, red_mask, cv::MORPH_OPEN, kernel);
-    cv::morphologyEx(red_mask, red_mask, cv::MORPH_CLOSE, kernel);
-    
-    return red_mask;
-}
+        // Apply morphological operations
+        int kernel_size = 5;
+        cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, 
+                                                 cv::Size(kernel_size, kernel_size));
+        cv::morphologyEx(red_mask, red_mask, cv::MORPH_OPEN, kernel);
+        cv::morphologyEx(red_mask, red_mask, cv::MORPH_CLOSE, kernel);
 
-bool isValidCube(const cv::Mat& stats, int label)
-{
-    // Cube filtering parameters
-    const int MIN_AREA = 100;     // Minimum pixel area
-    const int MAX_AREA = 5000;    // Maximum pixel area
-    const double MAX_ASPECT_RATIO_DEVIATION = 0.5;
-    
-    int area = stats.at<int>(label, cv::CC_STAT_AREA);
-    int width = stats.at<int>(label, cv::CC_STAT_WIDTH);
-    int height = stats.at<int>(label, cv::CC_STAT_HEIGHT);
-    
-    // Area filtering
-    if (area < MIN_AREA || area > MAX_AREA) {
-        return false;
-    }
-    
-    // Aspect ratio check (expecting roughly square shape)
-    double aspect_ratio = static_cast<double>(width) / height;
-    if (std::abs(aspect_ratio - 1.0) > MAX_ASPECT_RATIO_DEVIATION) {
-        return false;
-    }
-    
-    return true;
-}
+        // Connected components analysis
+        cv::Mat labels, stats, centroids;
+        int num_labels = cv::connectedComponentsWithStats(red_mask, labels, stats, centroids, 8, CV_32S);
 
-geometry_msgs::PoseStamped estimateCubePose(double x_pixel, double y_pixel)
-{
-    geometry_msgs::PoseStamped cube_pose;
-    
-    // Validate pixel coordinates
-    if (x_pixel < 0 || y_pixel < 0 || 
-        x_pixel >= latest_depth_image.cols || 
-        y_pixel >= latest_depth_image.rows) {
-        ROS_WARN("Invalid pixel coordinates");
-        return cube_pose;
-    }
-    
-    // Get depth value
-    uint16_t depth_value = latest_depth_image.at<uint16_t>(y_pixel, x_pixel);
-    
-    // Filter out invalid depth readings
-    const uint16_t MIN_DEPTH = 500;   // 0.5 meters
-    const uint16_t MAX_DEPTH = 5000;  // 5 meters
-    if (depth_value < MIN_DEPTH || depth_value > MAX_DEPTH) {
-        ROS_WARN("Depth value out of valid range");
-        return cube_pose;
-    }
-    
-    // Convert depth to meters
-    double depth_meters = depth_value * 0.001; // Assuming millimeters
-    
-    // Camera intrinsic parameters (example values, replace with your camera's calibration)
-    const double fx = 525.0;  // Focal length x
-    const double fy = 525.0;  // Focal length y
-    const double cx = 319.5;  // Principal point x
-    const double cy = 239.5;  // Principal point y
-    
-    // Convert pixel coordinates to 3D camera frame
-    double x_camera = (x_pixel - cx) * depth_meters / fx;
-    double y_camera = (y_pixel - cy) * depth_meters / fy;
-    double z_camera = depth_meters;
-    
-    // Transform to map frame
-    try {
-        geometry_msgs::PoseStamped camera_pose;
-        camera_pose.header.frame_id = "camera_depth_optical_frame";
-        camera_pose.header.stamp = ros::Time::now();
-        camera_pose.pose.position.x = x_camera;
-        camera_pose.pose.position.y = y_camera;
-        camera_pose.pose.position.z = z_camera;
-        camera_pose.pose.orientation.w = 1.0;
+        // Create a colored visualization
+        cv::Mat output = cv_ptr->image.clone();
         
-        // Transform to map frame
-        geometry_msgs::PoseStamped map_pose = 
-            tf_buffer.transform(camera_pose, "map", ros::Duration(1.0));
-        
-        return map_pose;
-    }
-    catch (tf2::TransformException& ex) {
-        ROS_ERROR("Pose transformation failed: %s", ex.what());
-        return cube_pose;
-    }
-}
+        // Process each detected component
+        for(int i = 1; i < num_labels; i++) // Start from 1 to skip background
+        {
+            int area = stats.at<int>(i, cv::CC_STAT_AREA);
+            
+            // Filter small components
+            if(area < MIN_AREA) continue;
 
-void publishDetectedCubes(const std::vector<geometry_msgs::PoseStamped>& cubes)
-{
-    // Publish cube positions as a PoseArray
-    geometry_msgs::PoseArray pose_array;
-    pose_array.header.frame_id = "map";
-    pose_array.header.stamp = ros::Time::now();
-    
-    for (const auto& cube : cubes) {
-        pose_array.poses.push_back(cube.pose);
-        
-        // Optionally add to navigation goals
-        addUniqueNavigationGoal(cube);
-        
-        ROS_INFO("Detected Cube at (x: %.2f, y: %.2f, z: %.2f)", 
-                 cube.pose.position.x, 
-                 cube.pose.position.y, 
-                 cube.pose.position.z);
-    }
-    
-    // Publish pose array
-    cube_positions_publisher.publish(pose_array);
-}
+            // Get centroid
+            double x = centroids.at<double>(i, 0);
+            double y = centroids.at<double>(i, 1);
 
-void addUniqueNavigationGoal(const geometry_msgs::PoseStamped& new_goal)
-{
-    const double MIN_GOAL_DISTANCE = 0.5; // meters
-    
-    // Check if goal is too close to existing goals
-    auto is_too_close = [&](const geometry_msgs::PoseStamped& existing_goal) {
-        double dx = new_goal.pose.position.x - existing_goal.pose.position.x;
-        double dy = new_goal.pose.position.y - existing_goal.pose.position.y;
-        return std::sqrt(dx*dx + dy*dy) < MIN_GOAL_DISTANCE;
-    };
-    
-    // Check if goal already exists
-    auto exists = std::any_of(navigation_goals.begin(), navigation_goals.end(), is_too_close);
-    
-    if (!exists) {
-        navigation_goals.push_back(new_goal);
+		    // Assume conversion function or mechanism here:
+		    geometry_msgs::PoseStamped newGoal;
+		    newGoal.header.frame_id = "map";  // Typically, you'd transform this
+		    newGoal.header.stamp = ros::Time::now();
+		    newGoal.pose.position.x = x;  // Placeholder: Convert x appropriately
+		    newGoal.pose.position.y = y;  // Placeholder: Convert y appropriately
+		    newGoal.pose.orientation.w = 1.0;  // No rotation
+
+		    navigation_goals.push_back(newGoal);
+
+            // Draw centroid on visualization
+            cv::circle(output, cv::Point(x, y), 5, cv::Scalar(0, 255, 0), -1);
+            
+            // Create and publish centroid message
+            geometry_msgs::PointStamped centroid_msg;
+            centroid_msg.header = msg->header;
+            centroid_msg.point.x = x;
+            centroid_msg.point.y = y;
+            centroid_msg.point.z = 0.0; // Since this is 2D image coordinates
+            
+            centroids_pub_.publish(centroid_msg);
+            
+            // Print centroid information
+            ROS_INFO("Cube %d centroid: (%.2f, %.2f), Area: %d", i, x, y, area);
+        }
+
+        // Publish the visualization
+        sensor_msgs::ImagePtr vis_msg = 
+            cv_bridge::CvImage(msg->header, "bgr8", output).toImageMsg();
+        mask_pub.publish(vis_msg);
     }
-}
 
 
     /// -----------------------------------------------------------------
+
+	void perform360Rotation() {
+		ros::Rate rate(10); // 10 Hz loop rate
+		geometry_msgs::Twist twist_msg;
+
+		// Set rotational velocity (radians per second)
+		twist_msg.linear.x = 0.0;  // No forward motion
+		twist_msg.angular.z = 1.0; // Rotate counterclockwise (1 rad/s)
+
+		// Calculate the duration for a full rotation (360 degrees = 2π radians)
+		double rotation_duration = 2 * M_PI / twist_msg.angular.z;
+		ros::Time start_time = ros::Time::now();
+
+		// Publish rotation commands for the calculated duration
+		ROS_INFO("[Node B] Starting 360-degree rotation.");
+		while (ros::ok() && (ros::Time::now() - start_time).toSec() < rotation_duration) {
+		    cmd_vel_publisher.publish(twist_msg);
+		    rate.sleep();
+		}
+
+		// Stop the robot after completing the rotation
+		twist_msg.angular.z = 0.0;
+		cmd_vel_publisher.publish(twist_msg);
+		ROS_INFO("[Node B] 360-degree rotation completed.");
+	}
+
+
 	void printReceivedTags() {
 		std::ostringstream oss;
 		oss << "Received tags: ";
@@ -477,27 +299,26 @@ void addUniqueNavigationGoal(const geometry_msgs::PoseStamped& new_goal)
 
 
 
-	void rgbImageCallback(const sensor_msgs::ImageConstPtr& msg) {
-		try {
-		    cv_bridge::CvImagePtr cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
-		    latest_rgb_image = cv_ptr->image;
-		    latest_rgb_timestamp = msg->header.stamp; // Store timestamp
-		} catch (cv_bridge::Exception& e) {
-		    ROS_ERROR("cv_bridge exception: %s", e.what());
-		}
-	}
+    void rgbImageCallback(const sensor_msgs::ImageConstPtr& msg) {
+        try {
+            latest_rgb_image = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8)->image;
+            //ROS_INFO("[Node B] Received RGB image.");
+        } catch (cv_bridge::Exception& e) {
+            ROS_ERROR("cv_bridge exception: %s", e.what());
+        }
+    }
 
-	void depthImageCallback(const sensor_msgs::ImageConstPtr& msg) {
-		try {
-		    cv_bridge::CvImagePtr cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::TYPE_16UC1);
-		    latest_depth_image = cv_ptr->image;
-		    latest_depth_timestamp = msg->header.stamp; // Store timestamp
-		} catch (cv_bridge::Exception& e) {
-		    ROS_ERROR("cv_bridge exception: %s", e.what());
-		}
-	}
+    void depthImageCallback(const sensor_msgs::ImageConstPtr& msg) {
+        try {
+            latest_depth_image = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::TYPE_16UC1)->image;
+            ROS_INFO("[Node B] Received depth image.");
+        } catch (cv_bridge::Exception& e) {
+            //ROS_ERROR("cv_bridge exception: %s", e.what());
+        }
+    }
 
     void tagDetectionsCallback(const apriltag_ros::AprilTagDetectionArray::ConstPtr& msg) {
+    	publishFeedback("The robot is scanning for AprilTags.");
         std::string target_frame = "map";
         std::string source_frame = msg->header.frame_id;
 
@@ -513,30 +334,40 @@ void addUniqueNavigationGoal(const geometry_msgs::PoseStamped& new_goal)
         geometry_msgs::PoseStamped pos_in;
         geometry_msgs::PoseStamped pos_out;
 
-        for(int i = 0; i < msg->detections.size(); ++i)
-        {
-            pos_in.header.frame_id = msg->detections.at(i).pose.header.frame_id;
-            pos_in.pose.position.x = msg->detections.at(i).pose.pose.pose.position.x;
-            pos_in.pose.position.y = msg->detections.at(i).pose.pose.pose.position.y;
-            pos_in.pose.position.z = msg->detections.at(i).pose.pose.pose.position.z;
-            pos_in.pose.orientation.x = msg->detections.at(i).pose.pose.pose.orientation.x;
-            pos_in.pose.orientation.y = msg->detections.at(i).pose.pose.pose.orientation.y;
-            pos_in.pose.orientation.z = msg->detections.at(i).pose.pose.pose.orientation.z;
-            pos_in.pose.orientation.w = msg->detections.at(i).pose.pose.pose.orientation.w;
-        
-            tf2::doTransform(pos_in, pos_out, transformed);
+		for (int i = 0; i < msg->detections.size(); ++i) {
+			pos_in.header.frame_id = msg->detections.at(i).pose.header.frame_id;
+			pos_in.pose.position.x = msg->detections.at(i).pose.pose.pose.position.x;
+			pos_in.pose.position.y = msg->detections.at(i).pose.pose.pose.position.y;
+			pos_in.pose.position.z = msg->detections.at(i).pose.pose.pose.position.z;
+			pos_in.pose.orientation.x = msg->detections.at(i).pose.pose.pose.orientation.x;
+			pos_in.pose.orientation.y = msg->detections.at(i).pose.pose.pose.orientation.y;
+			pos_in.pose.orientation.z = msg->detections.at(i).pose.pose.pose.orientation.z;
+			pos_in.pose.orientation.w = msg->detections.at(i).pose.pose.pose.orientation.w;
 
-            // original pose
-            const auto& pp = pos_in.pose.position;
-            const auto& po = pos_in.pose.orientation;
-            // transformed pose
-            const auto& mp = pos_out.pose.position;
-            const auto& mo = pos_out.pose.orientation;
+			tf2::doTransform(pos_in, pos_out, transformed);
 
-            //ROS_INFO_STREAM("Obj with ID: " << msg->detections.at(i).id[0]);
-            //ROS_INFO_STREAM("Original pose:    ( " << pp.x << " , " << pp.y << " , " << pp.z << " )");
-            //ROS_INFO_STREAM("Transformed pose: ( " << mp.x << " , " << mp.y << " , " << mp.z << " )");
-        }
+			// Get the ID of the detected object
+			int detected_id = msg->detections.at(i).id[0];
+
+			// Check if the ID is in the received_tags list
+			if (std::find(received_tags.begin(), received_tags.end(), detected_id) != received_tags.end()) {
+				ROS_INFO_STREAM("Detected ID " << detected_id << " is in the received list.");
+			} else {
+				ROS_WARN_STREAM("Detected ID " << detected_id << " is NOT in the received list.");
+			}
+
+			// Original pose
+			const auto& pp = pos_in.pose.position;
+			const auto& po = pos_in.pose.orientation;
+
+			// Transformed pose
+			const auto& mp = pos_out.pose.position;
+			const auto& mo = pos_out.pose.orientation;
+
+			ROS_INFO_STREAM("Original pose:    ( " << pp.x << " , " << pp.y << " , " << pp.z << " )");
+			ROS_INFO_STREAM("Transformed pose: ( " << mp.x << " , " << mp.y << " , " << mp.z << " )");
+		}
+
     }
 
 /*
@@ -563,7 +394,6 @@ ROS_INFO_STREAM("Orientation (quaternion):\n"
         goal2.pose.position.x = 10.5;
         goal2.pose.position.y = -3.7;
 
-
         geometry_msgs::PoseStamped goal3 = goal1;
         goal3.pose.position.x = 9.6;
         goal3.pose.position.y = 0.7;
@@ -587,19 +417,20 @@ ROS_INFO_STREAM("Orientation (quaternion):\n"
         }
     }
 
-    void sendNextGoal(const geometry_msgs::PoseStamped& goal_pose) {
-        move_base_msgs::MoveBaseGoal goal;
-        goal.target_pose = goal_pose;
+	void sendNextGoal(const geometry_msgs::PoseStamped& goal_pose) {
+		move_base_msgs::MoveBaseGoal goal;
+		goal.target_pose = goal_pose;
 
-        ROS_INFO("[Node B] Sending goal to (x: %f, y: %f), index = %ld", goal_pose.pose.position.x, goal_pose.pose.position.y, current_goal_index);
-        publishFeedback("The robot is moving.");
-        goal_active = true;
+		ROS_INFO("[Node B] Sending goal to (x: %f, y: %f), index = %ld", goal_pose.pose.position.x, goal_pose.pose.position.y, current_goal_index);
+		publishFeedback("The robot is moving."); // Publish feedback
+		goal_active = true;
 
-        action_client.sendGoal(goal,
-            boost::bind(&NodeB::doneCallback, this, _1, _2),
-            boost::bind(&NodeB::activeCallback, this),
-            boost::bind(&NodeB::feedbackCallback, this, _1));
-    }
+		action_client.sendGoal(goal,
+		    boost::bind(&NodeB::doneCallback, this, _1, _2),
+		    boost::bind(&NodeB::activeCallback, this),
+		    boost::bind(&NodeB::feedbackCallback, this, _1));
+	}
+
 
 	void doneCallback(const actionlib::SimpleClientGoalState& state,
 		              const move_base_msgs::MoveBaseResult::ConstPtr& result) {
@@ -608,12 +439,18 @@ ROS_INFO_STREAM("Orientation (quaternion):\n"
 		    ROS_INFO("[Node B] Reached goal successfully.");
 		    current_goal_index++;
 		    publishFeedback("The robot has reached its goal.");
-		    adjustHeadAngle(-0.5);  // Adjust head by -30 degrees (radians)
+
+		    // Perform 360-degree rotation
+		    perform360Rotation();
+
+		    // Adjust head angle (optional)
+		    adjustHeadAngle(-0.5);
 		} else {
 		    ROS_WARN("[Node B] Failed to reach goal. Retrying...");
 		    publishFeedback("The robot failed to reach its goal. Retrying...");
 		}
 	}
+
 
 	bool adjustHeadAngle(double tilt_angle_radians) {
 		HeadClient head_client("head_controller/follow_joint_trajectory", true);
@@ -642,9 +479,9 @@ ROS_INFO_STREAM("Orientation (quaternion):\n"
     }
 
     void feedbackCallback(const move_base_msgs::MoveBaseFeedback::ConstPtr& feedback) {
-        //ROS_INFO("[Node B] Feedback: Current position (x: %f, y: %f)",
-        //         feedback->base_position.pose.position.x,
-        //         feedback->base_position.pose.position.y);
+        ROS_INFO("[Node B] Feedback: Current position (x: %f, y: %f)",
+                 feedback->base_position.pose.position.x,
+                 feedback->base_position.pose.position.y);
     }
 
     void sendCubePositionsToNodeA() {
@@ -671,11 +508,12 @@ ROS_INFO_STREAM("Orientation (quaternion):\n"
         }
     }
 
-    void publishFeedback(const std::string& message) {
-        std_msgs::String feedback_msg;
-        feedback_msg.data = message;
-        feedback_publisher.publish(feedback_msg);
-    }
+	void publishFeedback(const std::string& message) {
+		std_msgs::String feedback_msg;
+		feedback_msg.data = message;
+		feedback_publisher.publish(feedback_msg);
+	}
+
 
 
 };
@@ -690,3 +528,4 @@ int main(int argc, char** argv) {
     ros::spin();
     return 0;
 }
+
