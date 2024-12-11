@@ -9,15 +9,30 @@ ros::Publisher ids_publisher;
 
 // Callback to handle feedback from Node B
 void feedbackCallback(const std_msgs::String::ConstPtr& msg) {
-    ROS_INFO("[Node A] Feedback from Node B: %s", msg->data.c_str());
+    std::string feedback = msg->data;
+
+    // Parse the feedback to print meaningful messages
+    if (feedback.find("moving") != std::string::npos) {
+        ROS_INFO("[Node A] Status: The robot is moving.");
+    } else if (feedback.find("scanning") != std::string::npos) {
+        ROS_INFO("[Node A] Status: The robot is scanning.");
+    } else if (feedback.find("found Apriltags") != std::string::npos) {
+        ROS_INFO("[Node A] Status: %s", feedback.c_str()); // Print the full feedback
+    } else if (feedback.find("detection is finished") != std::string::npos) {
+        ROS_INFO("[Node A] Status: Detection is finished.");
+    } else {
+        ROS_INFO("[Node A] Status: %s", feedback.c_str()); // Default logging
+    }
 }
 
 // Callback to handle cube positions from Node B
 void cubePositionsCallback(const geometry_msgs::PoseArray::ConstPtr& msg) {
     ROS_INFO("[Node A] Received cube positions from Node B.");
+    int cube_count = 0;
     for (const auto& pose : msg->poses) {
-        ROS_INFO("Cube position: [x: %f, y: %f, z: %f]", pose.position.x, pose.position.y, pose.position.z);
+        ROS_INFO("Cube %d position: [x: %f, y: %f, z: %f]", ++cube_count, pose.position.x, pose.position.y, pose.position.z);
     }
+    ROS_INFO("[Node A] Detection and cube processing are finished.");
 }
 
 int main(int argc, char **argv) {
@@ -66,6 +81,9 @@ int main(int argc, char **argv) {
             ROS_INFO("[Node A] Published IDs to Node B (attempt %d).", i + 1);
             loop_rate.sleep();
         }
+
+        // Inform the user that Node A is waiting for feedback and cube positions
+        ROS_INFO("[Node A] Waiting for feedback and cube positions from Node B...");
     } else {
         ROS_ERROR("[Node A] Failed to call service apriltag_ids_srv.");
         return 1;
