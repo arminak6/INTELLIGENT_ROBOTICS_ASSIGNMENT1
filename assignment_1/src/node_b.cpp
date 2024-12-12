@@ -40,7 +40,9 @@ public:
 
         // Subscribe to RGB-D data
         rgb_image_subscriber = it.subscribe("/xtion/rgb/image_raw", 10, &NodeB::imageCallback, this); //&NodeB::rgbImageCallback
-        depth_image_subscriber = it.subscribe("/xtion/depth/image_raw", 10, &NodeB::depthImageCallback, this);
+        depth_image_subscriber = it.subscribe("/xtion/depth_registered/image_raw", 10, &NodeB::depthImageCallback, this);   //  /xtion/depth/image_raw
+
+        sub_camera_info = nh.subscribe("/xtion/depth_registered/camera_info", 10, &NodeB::cameraInfoCallback, this);  // /xtion/rgb/camera_info
 
         // Publish the masked image and centroids
         mask_pub = it.advertise("/red_mask/image", 1);
@@ -130,6 +132,7 @@ private:
 	ros::NodeHandle nh;
     ros::Subscriber tag_detections_subscriber;
     ros::Subscriber target_ids_subscriber;
+    ros::Subscriber sub_camera_info;
     ros::Publisher feedback_publisher;
     ros::Publisher cube_positions_publisher;
     ros::ServiceClient send_positions_client;	
@@ -160,6 +163,12 @@ private:
 
     size_t current_goal_index = 0;
     bool goal_active = false;
+
+    // -----------------------------------------------------------------
+    // intrinsic parameters
+    double fx,fy,cx,cy;
+    bool intrinsicParamInit = false;
+    bool depthInit = false;
 
     // -----------------------------------------------------------------
 
@@ -241,9 +250,34 @@ private:
             centroid_msg.point.z = 0.0; // Since this is 2D image coordinates
             
             centroids_pub_.publish(centroid_msg);
-            
+
             // Print centroid information
             ROS_INFO("Cube %d centroid: (%.2f, %.2f), Area: %d", i, x, y, area);
+
+
+            // AGGIUNTE MIE
+            if (depthInit && intrinsicParamInit) {
+                float depth = latest_depth_image.at<float> (y,x); 
+                float X = (x - cx) * depth / fx;
+                float Y = (y - cy) * depth / fy;
+                float Z = depth;
+
+                geometry_msgs::PointStamped camera_point, map_point;
+                camera_point.header.frame_id = "xtion_rgb_optical_frame"; //  "camera_frame";
+                camera_point.header.stamp = ros::Time(0);//  ::now();
+                camera_point.point.x = X;
+                camera_point.point.y = Y;
+                camera_point.point.z = Z;
+
+                try {
+                    map_point = tf_buffer.transform(camera_point, "map");
+                    ROS_INFO("Map coordinates of red centroid: [x: %f, y: %f, z: %f]",
+                            map_point.point.x, map_point.point.y, map_point.point.z);
+                } catch (tf2::TransformException &ex) {
+                    ROS_WARN("Transform failed of red centroid: %s", ex.what());
+                }
+            }
+
         }
 
         // Publish the visualization
@@ -314,12 +348,28 @@ private:
         try {
             latest_depth_image = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::TYPE_16UC1)->image;
             ROS_INFO("[Node B] Received depth image.");
+            depthInit = true;
         } catch (cv_bridge::Exception& e) {
             //ROS_ERROR("cv_bridge exception: %s", e.what());
         }
     }
 
-	   void tagDetectionsCallback(const apriltag_ros::AprilTagDetectionArray::ConstPtr& msg) {
+    void cameraInfoCallback (const sensor_msgs::CameraInfo::ConstPtr& msg) {
+        // Access intrinsic parameters
+        // Camera matrix (K) elements
+        fx = msg->K[0]; // focal length x
+        fy = msg->K[4]; // focal length y
+        cx = msg->K[2]; // optical center x
+        cy = msg->K[5]; // optical center y
+
+        intrinsicParamInit = true;
+        
+        // Distortion coefficients
+        //std::vector<double> distortion_coeffs = msg->D;
+    }
+
+
+	void tagDetectionsCallback(const apriltag_ros::AprilTagDetectionArray::ConstPtr& msg) {
 		publishFeedback("The robot is scanning for AprilTags.");
 		std::string target_frame = "map";
 		std::string source_frame = msg->header.frame_id;
