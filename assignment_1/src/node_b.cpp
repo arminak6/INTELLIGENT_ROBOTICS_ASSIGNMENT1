@@ -51,10 +51,8 @@ public:
         // Initialize service client
         send_positions_client = nh.serviceClient<assignment_1::SendCubePositions>("/node_a/send_cube_positions");
 
-		cmd_vel_publisher = nh.advertise<geometry_msgs::Twist>("/cmd_vel", 10);	
+		cmd_vel_publisher = nh.advertise<geometry_msgs::Twist>("/cmd_vel", 10);	 //     TODO, try with  /mobile_base_controller/cmd_vel
 		feedback_publisher = nh.advertise<std_msgs::String>("node_b_feedback", 10);
-	
-
 
         ROS_INFO("Waiting for move_base action server...");
         action_client.waitForServer();
@@ -136,9 +134,7 @@ private:
     ros::Publisher feedback_publisher;
     ros::Publisher cube_positions_publisher;
     ros::ServiceClient send_positions_client;	
-	std::set<int> seen_tags;
-	
-																																																																																																											              			
+	std::set<int> seen_tags;																																																																																																						              			
 
 	ros::Publisher cmd_vel_publisher;
 

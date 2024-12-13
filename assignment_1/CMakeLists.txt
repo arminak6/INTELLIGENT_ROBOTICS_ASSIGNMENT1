@@ -20,6 +20,8 @@ find_package(catkin REQUIRED COMPONENTS
   tf
   cv_bridge
   image_transport
+  visualization_msgs
+  image_geometry
 
 )
 
@@ -251,13 +253,16 @@ ${catkin_INCLUDE_DIRS}
 
 add_executable(node_a src/node_a.cpp)
 add_executable(node_b src/node_b.cpp)
+add_executable(node_c src/node_c.cpp)
 target_link_libraries(node_a ${catkin_LIBRARIES})
 target_link_libraries(node_b ${catkin_LIBRARIES})
+target_link_libraries(node_c ${catkin_LIBRARIES})
 ####target_link_libraries(node_b frontier_utils ${catkin_LIBRARIES})
 
 
 add_dependencies(node_a assignment_1_generate_messages_cpp)
 add_dependencies(node_b assignment_1_generate_messages_cpp)
+add_dependencies(node_c assignment_1_generate_messages_cpp)
 
 
 
