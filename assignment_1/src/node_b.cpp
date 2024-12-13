@@ -51,7 +51,7 @@ public:
         // Initialize service client
         send_positions_client = nh.serviceClient<assignment_1::SendCubePositions>("/node_a/send_cube_positions");
 
-		cmd_vel_publisher = nh.advertise<geometry_msgs::Twist>("/cmd_vel", 10);	 //     TODO, try with  /mobile_base_controller/cmd_vel
+		cmd_vel_publisher = nh.advertise<geometry_msgs::Twist>("/mobile_base_controller/cmd_vel", 10);	 //     TODO, try with  /mobile_base_controller/cmd_vel     //  cmd_vel
 		feedback_publisher = nh.advertise<std_msgs::String>("node_b_feedback", 10);
 
         ROS_INFO("Waiting for move_base action server...");
@@ -229,11 +229,9 @@ private:
 		    geometry_msgs::PoseStamped newGoal;
 		    newGoal.header.frame_id = "map";  // Typically, you'd transform this
 		    newGoal.header.stamp = ros::Time::now();
-		    newGoal.pose.position.x = x;  // Placeholder: Convert x appropriately
-		    newGoal.pose.position.y = y;  // Placeholder: Convert y appropriately
-		    newGoal.pose.orientation.w = 1.0;  // No rotation
+		    
 
-		    navigation_goals.push_back(newGoal);
+		    
 
             // Draw centroid on visualization
             cv::circle(output, cv::Point(x, y), 5, cv::Scalar(0, 255, 0), -1);
@@ -251,7 +249,6 @@ private:
             ROS_INFO("Cube %d centroid: (%.2f, %.2f), Area: %d", i, x, y, area);
 
 
-            // AGGIUNTE MIE
             if (depthInit && intrinsicParamInit) {
                 float depth = latest_depth_image.at<float> (y,x); 
                 float X = (x - cx) * depth / fx;
@@ -266,9 +263,19 @@ private:
                 camera_point.point.z = Z;
 
                 try {
+                    //TODO the problem is that it prints the position of the camera of the robot w.r.t. map ref. frame
                     map_point = tf_buffer.transform(camera_point, "map");
                     ROS_INFO("Map coordinates of red centroid: [x: %f, y: %f, z: %f]",
                             map_point.point.x, map_point.point.y, map_point.point.z);
+
+                    // newGoal definition
+                    newGoal.pose.position.x = map_point.point.x;  // Placeholder: Convert x appropriately
+		            newGoal.pose.position.y = map_point.point.y;  // Placeholder: Convert y appropriately
+		            newGoal.pose.orientation.w = 1.0;  // No rotation
+
+                    navigation_goals.push_back(newGoal); 
+
+                    
                 } catch (tf2::TransformException &ex) {
                     ROS_WARN("Transform failed of red centroid: %s", ex.what());
                 }
@@ -592,4 +599,5 @@ int main(int argc, char** argv) {
     ros::spin();
     return 0;
 }
+
 
