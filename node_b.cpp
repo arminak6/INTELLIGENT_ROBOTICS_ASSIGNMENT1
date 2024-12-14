@@ -40,7 +40,9 @@ public:
 
         // Subscribe to RGB-D data
         rgb_image_subscriber = it.subscribe("/xtion/rgb/image_raw", 10, &NodeB::imageCallback, this); //&NodeB::rgbImageCallback
-        depth_image_subscriber = it.subscribe("/xtion/depth/image_raw", 10, &NodeB::depthImageCallback, this);
+        depth_image_subscriber = it.subscribe("/xtion/depth_registered/image_raw", 10, &NodeB::depthImageCallback, this);   //  /xtion/depth/image_raw
+
+        sub_camera_info = nh.subscribe("/xtion/depth_registered/camera_info", 10, &NodeB::cameraInfoCallback, this);  // /xtion/rgb/camera_info
 
         // Publish the masked image and centroids
         mask_pub = it.advertise("/red_mask/image", 1);
@@ -49,10 +51,8 @@ public:
         // Initialize service client
         send_positions_client = nh.serviceClient<assignment_1::SendCubePositions>("/node_a/send_cube_positions");
 
-		cmd_vel_publisher = nh.advertise<geometry_msgs::Twist>("/cmd_vel", 10);	
+		cmd_vel_publisher = nh.advertise<geometry_msgs::Twist>("/mobile_base_controller/cmd_vel", 10);	 //     TODO, try with  /mobile_base_controller/cmd_vel     //  cmd_vel
 		feedback_publisher = nh.advertise<std_msgs::String>("node_b_feedback", 10);
-	
-
 
         ROS_INFO("Waiting for move_base action server...");
         action_client.waitForServer();
@@ -130,12 +130,11 @@ private:
 	ros::NodeHandle nh;
     ros::Subscriber tag_detections_subscriber;
     ros::Subscriber target_ids_subscriber;
+    ros::Subscriber sub_camera_info;
     ros::Publisher feedback_publisher;
     ros::Publisher cube_positions_publisher;
     ros::ServiceClient send_positions_client;	
-	std::set<int> seen_tags;
-	
-																																																																																																											              			
+	std::set<int> seen_tags;																																																																																																						              			
 
 	ros::Publisher cmd_vel_publisher;
 
@@ -160,6 +159,12 @@ private:
 
     size_t current_goal_index = 0;
     bool goal_active = false;
+
+    // -----------------------------------------------------------------
+    // intrinsic parameters
+    double fx,fy,cx,cy;
+    bool intrinsicParamInit = false;
+    bool depthInit = false;
 
     // -----------------------------------------------------------------
 
@@ -224,11 +229,9 @@ private:
 		    geometry_msgs::PoseStamped newGoal;
 		    newGoal.header.frame_id = "map";  // Typically, you'd transform this
 		    newGoal.header.stamp = ros::Time::now();
-		    newGoal.pose.position.x = x;  // Placeholder: Convert x appropriately
-		    newGoal.pose.position.y = y;  // Placeholder: Convert y appropriately
-		    newGoal.pose.orientation.w = 1.0;  // No rotation
+		    
 
-		    navigation_goals.push_back(newGoal);
+		    
 
             // Draw centroid on visualization
             cv::circle(output, cv::Point(x, y), 5, cv::Scalar(0, 255, 0), -1);
@@ -241,9 +244,43 @@ private:
             centroid_msg.point.z = 0.0; // Since this is 2D image coordinates
             
             centroids_pub_.publish(centroid_msg);
-            
+
             // Print centroid information
             ROS_INFO("Cube %d centroid: (%.2f, %.2f), Area: %d", i, x, y, area);
+
+
+            if (depthInit && intrinsicParamInit) {
+                float depth = latest_depth_image.at<float> (y,x); 
+                float X = (x - cx) * depth / fx;
+                float Y = (y - cy) * depth / fy;
+                float Z = depth;
+
+                geometry_msgs::PointStamped camera_point, map_point;
+                camera_point.header.frame_id = "xtion_rgb_optical_frame"; //  "camera_frame";
+                camera_point.header.stamp = ros::Time(0);//  ::now();
+                camera_point.point.x = X;
+                camera_point.point.y = Y;
+                camera_point.point.z = Z;
+
+                try {
+                    //TODO the problem is that it prints the position of the camera of the robot w.r.t. map ref. frame
+                    map_point = tf_buffer.transform(camera_point, "map");
+                    ROS_INFO("Map coordinates of red centroid: [x: %f, y: %f, z: %f]",
+                            map_point.point.x, map_point.point.y, map_point.point.z);
+
+                    // newGoal definition
+                    newGoal.pose.position.x = map_point.point.x;  // Placeholder: Convert x appropriately
+		            newGoal.pose.position.y = map_point.point.y;  // Placeholder: Convert y appropriately
+		            newGoal.pose.orientation.w = 1.0;  // No rotation
+
+                    navigation_goals.push_back(newGoal); 
+
+                    
+                } catch (tf2::TransformException &ex) {
+                    ROS_WARN("Transform failed of red centroid: %s", ex.what());
+                }
+            }
+
         }
 
         // Publish the visualization
@@ -314,12 +351,28 @@ private:
         try {
             latest_depth_image = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::TYPE_16UC1)->image;
             ROS_INFO("[Node B] Received depth image.");
+            depthInit = true;
         } catch (cv_bridge::Exception& e) {
             //ROS_ERROR("cv_bridge exception: %s", e.what());
         }
     }
 
-	   void tagDetectionsCallback(const apriltag_ros::AprilTagDetectionArray::ConstPtr& msg) {
+    void cameraInfoCallback (const sensor_msgs::CameraInfo::ConstPtr& msg) {
+        // Access intrinsic parameters
+        // Camera matrix (K) elements
+        fx = msg->K[0]; // focal length x
+        fy = msg->K[4]; // focal length y
+        cx = msg->K[2]; // optical center x
+        cy = msg->K[5]; // optical center y
+
+        intrinsicParamInit = true;
+        
+        // Distortion coefficients
+        //std::vector<double> distortion_coeffs = msg->D;
+    }
+
+
+	void tagDetectionsCallback(const apriltag_ros::AprilTagDetectionArray::ConstPtr& msg) {
 		publishFeedback("The robot is scanning for AprilTags.");
 		std::string target_frame = "map";
 		std::string source_frame = msg->header.frame_id;
@@ -413,8 +466,8 @@ ROS_INFO_STREAM("Orientation (quaternion):\n"
         goal2.pose.position.y = -3.7;
 
         geometry_msgs::PoseStamped goal3 = goal1;
-        goal3.pose.position.x = 12.0;
-        goal3.pose.position.y = -1.1;
+        goal3.pose.position.x = 11.0;
+        goal3.pose.position.y = -1.7;
 
         geometry_msgs::PoseStamped goal4 = goal1;
         goal3.pose.position.x = 9.6;
