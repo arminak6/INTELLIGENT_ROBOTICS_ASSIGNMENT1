@@ -17,15 +17,14 @@ void feedbackCallback(const std_msgs::String::ConstPtr& msg) {
     } else if (feedback.find("scanning") != std::string::npos) {
         ROS_INFO("[Node A] Status: The robot is scanning.");
     } else if (feedback.find("found Apriltags") != std::string::npos) {
-        ROS_INFO("[Node A] Status: %s", feedback.c_str()); // Print the full feedback
+        ROS_INFO("[Node A] Status: %s", feedback.c_str()); 
     } else if (feedback.find("detection is finished") != std::string::npos) {
         ROS_INFO("[Node A] Status: Detection is finished.");
     } else {
-        ROS_INFO("[Node A] Status: %s", feedback.c_str()); // Default logging
+        ROS_INFO("[Node A] Status: %s", feedback.c_str()); 
     }
 }
 
-// Callback to handle cube positions from Node B
 void cubePositionsCallback(const geometry_msgs::PoseArray::ConstPtr& msg) {
     ROS_INFO("[Node A] Received cube positions from Node B.");
     int cube_count = 0;
@@ -75,8 +74,8 @@ int main(int argc, char **argv) {
         }
 
         // Publish the IDs
-        ros::Rate loop_rate(1); // 1 Hz
-        for (int i = 0; i < 5; ++i) { // Publish multiple times to ensure Node B gets the message
+        ros::Rate loop_rate(1); 
+        for (int i = 0; i < 5; ++i) { 
             ids_publisher.publish(ids_msg);
             ROS_INFO("[Node A] Published IDs to Node B (attempt %d).", i + 1);
             loop_rate.sleep();
@@ -89,7 +88,6 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    // Spin to handle callbacks (e.g., feedback from Node B, cube positions)
     ros::spin();
 
     return 0;

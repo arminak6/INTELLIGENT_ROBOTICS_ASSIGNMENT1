@@ -1,4 +1,3 @@
-
 #include "ros/ros.h"
 #include "std_msgs/Int32MultiArray.h"
 #include "std_msgs/String.h"
@@ -31,27 +30,26 @@ typedef actionlib::SimpleActionClient<control_msgs::FollowJointTrajectoryAction>
 
 class NodeB {
 public:
+    /**
+     * Subscribes to topics, advertises publishers and sets up action clients.
+     */
     NodeB(ros::NodeHandle& nh) : action_client("move_base", true), tf_listener(tf_buffer), it(nh) {
-        // Initialize subscribers and publishers
         tag_detections_subscriber = nh.subscribe("/tag_detections", 10, &NodeB::tagDetectionsCallback, this);
         target_ids_subscriber = nh.subscribe("/apriltag_ids_topic", 10, &NodeB::targetIdsCallback, this);
         feedback_publisher = nh.advertise<std_msgs::String>("/node_b/feedback", 10);
         cube_positions_publisher = nh.advertise<geometry_msgs::PoseArray>("/node_b/cube_positions", 10);
 
-        // Subscribe to RGB-D data
-        rgb_image_subscriber = it.subscribe("/xtion/rgb/image_raw", 10, &NodeB::imageCallback, this); //&NodeB::rgbImageCallback
-        depth_image_subscriber = it.subscribe("/xtion/depth_registered/image_raw", 10, &NodeB::depthImageCallback, this);   //  /xtion/depth/image_raw
+        rgb_image_subscriber = it.subscribe("/xtion/rgb/image_raw", 10, &NodeB::imageCallback, this);
+        depth_image_subscriber = it.subscribe("/xtion/depth_registered/image_raw", 10, &NodeB::depthImageCallback, this);   
 
-        sub_camera_info = nh.subscribe("/xtion/depth_registered/camera_info", 10, &NodeB::cameraInfoCallback, this);  // /xtion/rgb/camera_info
+        sub_camera_info = nh.subscribe("/xtion/depth_registered/camera_info", 10, &NodeB::cameraInfoCallback, this);  
 
-        // Publish the masked image and centroids
         mask_pub = it.advertise("/red_mask/image", 1);
         centroids_pub_ = nh.advertise<geometry_msgs::PointStamped>("/red_cubes/centroids", 10);
 
-        // Initialize service client
         send_positions_client = nh.serviceClient<assignment_1::SendCubePositions>("/node_a/send_cube_positions");
 
-		cmd_vel_publisher = nh.advertise<geometry_msgs::Twist>("/mobile_base_controller/cmd_vel", 10);	 //     TODO, try with  /mobile_base_controller/cmd_vel     //  cmd_vel
+		cmd_vel_publisher = nh.advertise<geometry_msgs::Twist>("/mobile_base_controller/cmd_vel", 10);
 		feedback_publisher = nh.advertise<std_msgs::String>("node_b_feedback", 10);
 
         ROS_INFO("Waiting for move_base action server...");
@@ -71,59 +69,62 @@ public:
         startNavigation();
     }
 
-    // adjusting camera angle
-	bool  adjustCameraAngle(double tilt_angle) {
 
+    bool adjustCameraAngle(double tilt_angle) {
+        // Create an action client to control the head
         HeadClient* head_client_ = new HeadClient("head_controller/follow_joint_trajectory", true);
         
-        while(!head_client_->waitForServer(ros::Duration(5.0))){
+        // Wait for the action server to come up
+        while(!head_client_->waitForServer(ros::Duration(5.0))) {
             ROS_INFO("Waiting for head controller action server to come up...");
         }
-
-        // moveCamera
+        
+        // Create a goal to move the camera
         control_msgs::FollowJointTrajectoryGoal goal;
         
+        // Set the joint names
         goal.trajectory.joint_names.push_back("head_1_joint");
         goal.trajectory.joint_names.push_back("head_2_joint");
         
+        // Set the joint positions
         trajectory_msgs::JointTrajectoryPoint point;
         point.positions.push_back(0.0);
         point.positions.push_back(tilt_angle);
         
+        // Set the joint velocities
         point.velocities.push_back(0.1);
         point.velocities.push_back(0.1);
         
+        // Set the time from start
         point.time_from_start = ros::Duration(2.0);
         
+        // Add the point to the trajectory
         goal.trajectory.points.push_back(point);
         
         // Send the goal and wait for result with timeout
         bool finished_before_timeout = head_client_->sendGoalAndWait(goal, ros::Duration(5.0)) == actionlib::SimpleClientGoalState::SUCCEEDED;
         
         if (finished_before_timeout) {
-            actionlib::SimpleClientGoalState state = head_client_->getState();
-            ROS_INFO("Camera movement succeeded! Final state: %s", state.toString().c_str());
-            
             // Get the result
             control_msgs::FollowJointTrajectoryResultConstPtr result = head_client_->getResult();
             if (result) {
                 // Check error code
                 if (result->error_code == control_msgs::FollowJointTrajectoryResult::SUCCESSFUL) {
-                    //ROS_INFO("Movement completed successfully with no errors");
+                    ROS_INFO("Camera movement completed successfully with no errors");
                 } else {
-                    //ROS_WARN("Movement completed but with error code: %d", result->error_code);
+                    ROS_WARN("Camera movement completed but with error code: %d", result->error_code);
                 }
             }
+            
+            // Clean up
             delete head_client_;
             return true;
         } else {
-            ROS_ERROR("Camera movement failed or timed out!");
-            actionlib::SimpleClientGoalState state = head_client_->getState();
-            ROS_ERROR("Final state: %s", state.toString().c_str());
             delete head_client_;
+            ROS_ERROR("Camera movement failed or timed out!");
             return false;
         }
-	}
+    }
 
 
 private:
@@ -225,9 +226,8 @@ private:
             double x = centroids.at<double>(i, 0);
             double y = centroids.at<double>(i, 1);
 
-		    // Assume conversion function or mechanism here:
 		    geometry_msgs::PoseStamped newGoal;
-		    newGoal.header.frame_id = "map";  // Typically, you'd transform this
+		    newGoal.header.frame_id = "map";  
 		    newGoal.header.stamp = ros::Time::now();
 		    
 
@@ -241,11 +241,11 @@ private:
             centroid_msg.header = msg->header;
             centroid_msg.point.x = x;
             centroid_msg.point.y = y;
-            centroid_msg.point.z = 0.0; // Since this is 2D image coordinates
+            centroid_msg.point.z = 0.0; 
             
             centroids_pub_.publish(centroid_msg);
 
-            // Print centroid information
+            // centroid information
             ROS_INFO("Cube %d centroid: (%.2f, %.2f), Area: %d", i, x, y, area);
 
 
@@ -269,8 +269,8 @@ private:
                             map_point.point.x, map_point.point.y, map_point.point.z);
 
                     // newGoal definition
-                    newGoal.pose.position.x = map_point.point.x;  // Placeholder: Convert x appropriately
-		            newGoal.pose.position.y = map_point.point.y;  // Placeholder: Convert y appropriately
+                    newGoal.pose.position.x = map_point.point.x;  // Convert x appropriately
+		            newGoal.pose.position.y = map_point.point.y;  // Convert y appropriately
 		            newGoal.pose.orientation.w = 1.0;  // No rotation
 
                     navigation_goals.push_back(newGoal); 
@@ -296,33 +296,48 @@ private:
 
 
 
-    /// -----------------------------------------------------------------
-struct TagInfo {
-    int id;
-    float x, y; // Coordinates of the tag in some reference frame
-};
+    struct TagInfo {
+        int id;
+        float x, y; // Coordinates of the tag in some reference frame
+    };
 
-std::map<int, TagInfo> tagInfos; // Maps tag ID to its information
+    std::map<int, TagInfo> tagInfos; // Maps tag ID to its information
 
 
-int findClosestTagId(float cubeX, float cubeY) {
-    int closestId = -1;
-    float minDistance = std::numeric_limits<float>::max();
-    for (const auto& [id, info] : tagInfos) {
-        float distance = std::hypot(cubeX - info.x, cubeY - info.y);
-        if (distance < minDistance) {
-            minDistance = distance;
-            closestId = id;
+    /**
+     * Finds the tag ID closest to the given (x, y) coordinates.
+     *
+     * cubeX The x-coordinate of the cube.
+     * cubeY The y-coordinate of the cube.
+     */
+    int findClosestTagId(float cubeX, float cubeY) {
+        int closestId = -1;
+        float minDistance = std::numeric_limits<float>::max();
+        for (const auto& [id, info] : tagInfos) {
+            // Calculate the Euclidean distance between the cube and the tag
+            float distance = std::hypot(cubeX - info.x, cubeY - info.y);
+            if (distance < minDistance) {
+                // Update the closest tag ID and distance
+                minDistance = distance;
+                closestId = id;
+            }
         }
+        return closestId;
     }
-    return closestId;
-}
+
+	/**
+	 * Rotates the robot 360 degrees counterclockwise.
+	 *
+	 * This function uses a fixed loop rate and publishes Twist messages to the
+	 * mobile base controller to perform the rotation. The duration of the
+	 * rotation is calculated based on the desired angular velocity.
+	 */
 	void perform360Rotation() {
 		ros::Rate rate(10); // 10 Hz loop rate
 		geometry_msgs::Twist twist_msg;
 
 		// Set rotational velocity (radians per second)
-		twist_msg.linear.x = 0.0;  // No forward motion
+		twist_msg.linear.x = 0.0;   
 		twist_msg.angular.z = 1.0; // Rotate counterclockwise (1 rad/s)
 
 		// Calculate the duration for a full rotation (360 degrees = 2π radians)
@@ -486,7 +501,12 @@ ROS_INFO_STREAM("Orientation (quaternion):\n"
 
 
 
+    /**
+     * Define navigation goals for the robot.
+     * The goals are defined as geometry_msgs::PoseStamped messages.
+     */
     void defineNavigationGoals() {
+        // Define the first goal
         geometry_msgs::PoseStamped goal1;
         goal1.header.frame_id = "map";
         goal1.header.stamp = ros::Time::now();
@@ -494,18 +514,22 @@ ROS_INFO_STREAM("Orientation (quaternion):\n"
         goal1.pose.position.y = 0.0;
         goal1.pose.orientation.w = 1.0;
 
+        // Define the second goal
         geometry_msgs::PoseStamped goal2 = goal1;
         goal2.pose.position.x = 10.5;
         goal2.pose.position.y = -3.7;
 
+        // Define the third goal
         geometry_msgs::PoseStamped goal3 = goal1;
         goal3.pose.position.x = 9.6;
         goal3.pose.position.y = 0.7;
 
+        // Orient the third goal to face the opposite direction
         double yaw = M_PI;
         geometry_msgs::Quaternion quaternion = tf::createQuaternionMsgFromYaw(yaw);
         goal3.pose.orientation = quaternion;
 
+        // Add the goals to the vector
         navigation_goals.push_back(goal1);
         navigation_goals.push_back(goal2);
         navigation_goals.push_back(goal3);
@@ -526,7 +550,7 @@ ROS_INFO_STREAM("Orientation (quaternion):\n"
 		goal.target_pose = goal_pose;
 
 		ROS_INFO("[Node B] Sending goal to (x: %f, y: %f), index = %ld", goal_pose.pose.position.x, goal_pose.pose.position.y, current_goal_index);
-		publishFeedback("The robot is moving."); // Publish feedback
+		publishFeedback("The robot is moving."); 
 		goal_active = true;
 
 		action_client.sendGoal(goal,
@@ -556,24 +580,34 @@ ROS_INFO_STREAM("Orientation (quaternion):\n"
 	}
 
 
+	/**
+	 * Adjusts the head tilt angle of the robot.
+	 * The tilt angle in radians to move the head.
+	 * true if the movement was successful, false if it failed or timed out.
+	 */
 	bool adjustHeadAngle(double tilt_angle_radians) {
+		// Create an action client to control the head
 		HeadClient head_client("head_controller/follow_joint_trajectory", true);
 		head_client.waitForServer();
+		
+		// Create a goal to move the head
 		control_msgs::FollowJointTrajectoryGoal goal;
-		goal.trajectory.joint_names.push_back("head_tilt_joint");  // Assuming the joint's name
+		goal.trajectory.joint_names.push_back("head_tilt_joint"); 
 		trajectory_msgs::JointTrajectoryPoint point;
 		point.positions.push_back(tilt_angle_radians);
 		point.time_from_start = ros::Duration(1);
 		goal.trajectory.points.push_back(point);
+		
+		// Send the goal and wait for result with timeout
 		head_client.sendGoal(goal);
 		bool finished_before_timeout = head_client.waitForResult(ros::Duration(5.0));
 		if (finished_before_timeout) {
-		    actionlib::SimpleClientGoalState state = head_client.getState();
-		    ROS_INFO("Head movement completed: %s", state.toString().c_str());
-		    return true;
+			actionlib::SimpleClientGoalState state = head_client.getState();
+			ROS_INFO("Head movement completed: %s", state.toString().c_str());
+			return true;
 		} else {
-		    ROS_ERROR("Failed to adjust head angle.");
-		    return false;
+			ROS_ERROR("Failed to adjust head angle.");
+			return false;
 		}
 	}
 
@@ -588,19 +622,25 @@ ROS_INFO_STREAM("Orientation (quaternion):\n"
                  feedback->base_position.pose.position.y);
     }
 
+    /**
+     * Sends the detected cube positions to Node A using the
+     */
     void sendCubePositionsToNodeA() {
         assignment_1::SendCubePositions srv;
         geometry_msgs::PoseArray cube_positions;
         cube_positions.header.frame_id = "map";
         cube_positions.header.stamp = ros::Time::now();
 
+        // Iterate over the detected cubes and add their positions to the message
         for (const auto& cube_pose : detected_cubes) {
             cube_positions.poses.push_back(cube_pose.pose);
             ROS_INFO("Cube at (x: %f, y: %f)", cube_pose.pose.position.x, cube_pose.pose.position.y);
         }
 
+        // Set the request message
         srv.request.positions = cube_positions;
 
+        // Call the service and check the response
         if (send_positions_client.call(srv)) {
             if (srv.response.success) {
                 ROS_INFO("Cube positions successfully sent to Node A.");
