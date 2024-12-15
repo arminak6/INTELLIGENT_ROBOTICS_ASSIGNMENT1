@@ -280,6 +280,8 @@ private:
                     ROS_WARN("Transform failed of red centroid: %s", ex.what());
                 }
             }
+		int closestTagId = findClosestTagId(x, y); 
+        ROS_INFO("Cube %d with Tag ID %d: Centroid: (%.2f, %.2f), Area: %d", i, closestTagId, x, y, area);
 
         }
 
@@ -290,8 +292,31 @@ private:
     }
 
 
-    /// -----------------------------------------------------------------
 
+
+
+
+    /// -----------------------------------------------------------------
+struct TagInfo {
+    int id;
+    float x, y; // Coordinates of the tag in some reference frame
+};
+
+std::map<int, TagInfo> tagInfos; // Maps tag ID to its information
+
+
+int findClosestTagId(float cubeX, float cubeY) {
+    int closestId = -1;
+    float minDistance = std::numeric_limits<float>::max();
+    for (const auto& [id, info] : tagInfos) {
+        float distance = std::hypot(cubeX - info.x, cubeY - info.y);
+        if (distance < minDistance) {
+            minDistance = distance;
+            closestId = id;
+        }
+    }
+    return closestId;
+}
 	void perform360Rotation() {
 		ros::Rate rate(10); // 10 Hz loop rate
 		geometry_msgs::Twist twist_msg;
@@ -376,6 +401,14 @@ private:
 		publishFeedback("The robot is scanning for AprilTags.");
 		std::string target_frame = "map";
 		std::string source_frame = msg->header.frame_id;
+
+		for (const auto& detection : msg->detections) {
+		    TagInfo info;
+		    info.id = detection.id[0]; // Assuming each detection has exactly one ID
+		    info.x = detection.pose.pose.pose.position.x; // Example: X coordinate
+		    info.y = detection.pose.pose.pose.position.y; // Example: Y coordinate
+		    tagInfos[info.id] = info;
+		}
 
 		tf2_ros::Buffer tfBuffer;
 		tf2_ros::TransformListener tfListener(tfBuffer);
@@ -599,5 +632,3 @@ int main(int argc, char** argv) {
     ros::spin();
     return 0;
 }
-
-
