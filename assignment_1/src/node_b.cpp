@@ -28,6 +28,8 @@
 typedef actionlib::SimpleActionClient<move_base_msgs::MoveBaseAction> MoveBaseClient;
 typedef actionlib::SimpleActionClient<control_msgs::FollowJointTrajectoryAction> HeadClient;
 
+
+
 class NodeB {
 public:
     /**
@@ -166,6 +168,9 @@ private:
     double fx,fy,cx,cy;
     bool intrinsicParamInit = false;
     bool depthInit = false;
+    //vector for the raw depth values, h:480, w:640
+    //std::vector<std::vector<float>> depth_matrix(HEIGHT, std::vector<float>(WIDTH));
+
 
     // -----------------------------------------------------------------
 
@@ -250,7 +255,11 @@ private:
 
 
             if (depthInit && intrinsicParamInit) {
-                float depth = latest_depth_image.at<float> (y,x); 
+                int x_int = static_cast<int>(std::round(x));
+                int y_int = static_cast<int>(std::round(y));
+
+                float depth = latest_depth_image.at<float> (x_int,y_int); //(y,x); 
+                ROS_INFO_STREAM("Depth of point at " << x_int <<"  " << y_int << " =  " <<  depth);
                 float X = (x - cx) * depth / fx;
                 float Y = (y - cy) * depth / fy;
                 float Z = depth;
@@ -313,7 +322,9 @@ private:
     int findClosestTagId(float cubeX, float cubeY) {
         int closestId = -1;
         float minDistance = std::numeric_limits<float>::max();
-        for (const auto& [id, info] : tagInfos) {
+        for (std::map<int, TagInfo>::const_iterator it = tagInfos.begin(); it != tagInfos.end(); ++it) {
+            const int& id = it->first;
+            const TagInfo& info = it->second;
             // Calculate the Euclidean distance between the cube and the tag
             float distance = std::hypot(cubeX - info.x, cubeY - info.y);
             if (distance < minDistance) {
@@ -388,14 +399,35 @@ private:
     }
 
     void depthImageCallback(const sensor_msgs::ImageConstPtr& msg) {
-        try {
-            latest_depth_image = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::TYPE_16UC1)->image;
+        try {  // CV_8UC1
+            //latest_depth_image = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::TYPE_32FC1)->image;
+            cv_bridge::CvImagePtr cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::TYPE_32FC1);
+            latest_depth_image = cv_ptr->image;
+            int height = cv_ptr->image.rows;
+            int width = cv_ptr->image.cols;
             ROS_INFO("[Node B] Received depth image.");
             depthInit = true;
+
+            ROS_INFO_STREAM("encoding " << msg->encoding);
+
+            ROS_INFO_STREAM("msg dim: (h: " << msg->height << ", w: " << msg->width << ")");
+            ROS_INFO_STREAM("Mat depth dim: (h: "<< latest_depth_image.rows << " , w: " << latest_depth_image.cols << " )" );
+
+            // this prints numbers
+            /*for(int i = 0; i < latest_depth_image.rows; i++) {     // 480, height = rows
+                for(int j = 0; j < latest_depth_image.cols; j++) {   // 640  width = cols
+                    float value = latest_depth_image.at<float>(i, j);
+                    ROS_INFO("Pixel at (%d, %d): %.3f", i, j, value);
+                }
+            }*/
+
+            //ROS_INFO_STREAM("msg ")
         } catch (cv_bridge::Exception& e) {
             //ROS_ERROR("cv_bridge exception: %s", e.what());
         }
     }
+
+
 
     void cameraInfoCallback (const sensor_msgs::CameraInfo::ConstPtr& msg) {
         // Access intrinsic parameters
