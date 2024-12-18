@@ -174,133 +174,106 @@ private:
 
     // -----------------------------------------------------------------
 
-    void imageCallback(const sensor_msgs::ImageConstPtr& msg)
-    {
-        cv_bridge::CvImagePtr cv_ptr;
-        try
-        {
-            cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
-        }
-        catch (cv_bridge::Exception& e)
-        {
-            //ROS_ERROR("cv_bridge exception: %s", e.what());
-            return;
-        }
+	void imageCallback(const sensor_msgs::ImageConstPtr& msg) {
+		cv_bridge::CvImagePtr cv_ptr;
+		try {
+		    cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
+		} catch (cv_bridge::Exception& e) {
+		    ROS_ERROR("cv_bridge exception: %s", e.what());
+		    return;
+		}
 
-        // Convert BGR to HSV
-        cv::Mat hsv;
-        cv::cvtColor(cv_ptr->image, hsv, cv::COLOR_BGR2HSV);
+		// Convert BGR to HSV
+		cv::Mat hsv;
+		cv::cvtColor(cv_ptr->image, hsv, cv::COLOR_BGR2HSV);
 
-        // Define range for red color in HSV
-        cv::Mat mask1, mask2;
-        cv::Scalar lower_red1(0, 100, 100);
-        cv::Scalar upper_red1(10, 255, 255);
-        cv::Scalar lower_red2(160, 100, 100);
-        cv::Scalar upper_red2(180, 255, 255);
+		// Define range for red color in HSV
+		cv::Mat mask1, mask2;
+		cv::Scalar lower_red1(0, 100, 100);
+		cv::Scalar upper_red1(10, 255, 255);
+		cv::Scalar lower_red2(160, 100, 100);
+		cv::Scalar upper_red2(180, 255, 255);
 
-        // Create masks for both red ranges
-        cv::inRange(hsv, lower_red1, upper_red1, mask1);
-        cv::inRange(hsv, lower_red2, upper_red2, mask2);
+		// Create masks for both red ranges
+		cv::inRange(hsv, lower_red1, upper_red1, mask1);
+		cv::inRange(hsv, lower_red2, upper_red2, mask2);
 
-        // Combine the masks
-        cv::Mat red_mask = mask1 | mask2;
+		// Combine the masks
+		cv::Mat red_mask = mask1 | mask2;
 
-        // Apply morphological operations
-        int kernel_size = 5;
-        cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, 
-                                                 cv::Size(kernel_size, kernel_size));
-        cv::morphologyEx(red_mask, red_mask, cv::MORPH_OPEN, kernel);
-        cv::morphologyEx(red_mask, red_mask, cv::MORPH_CLOSE, kernel);
+		// Apply morphological operations
+		int kernel_size = 5;
+		cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(kernel_size, kernel_size));
+		cv::morphologyEx(red_mask, red_mask, cv::MORPH_OPEN, kernel);
+		cv::morphologyEx(red_mask, red_mask, cv::MORPH_CLOSE, kernel);
 
-        // Connected components analysis
-        cv::Mat labels, stats, centroids;
-        int num_labels = cv::connectedComponentsWithStats(red_mask, labels, stats, centroids, 8, CV_32S);
+		// Connected components analysis
+		cv::Mat labels, stats, centroids;
+		int num_labels = cv::connectedComponentsWithStats(red_mask, labels, stats, centroids, 8, CV_32S);
 
-        // Create a colored visualization
-        cv::Mat output = cv_ptr->image.clone();
-        
-        // Process each detected component
-        for(int i = 1; i < num_labels; i++) // Start from 1 to skip background
-        {
-            int area = stats.at<int>(i, cv::CC_STAT_AREA);
-            
-            // Filter small components
-            if(area < MIN_AREA) continue;
+		// Process each detected component
+		for (int i = 1; i < num_labels; i++) { // Start from 1 to skip the background
+		    int area = stats.at<int>(i, cv::CC_STAT_AREA);
+		    if (area < MIN_AREA) continue; // Ignore small blobs
 
-            // Get centroid
-            double x = centroids.at<double>(i, 0);
-            double y = centroids.at<double>(i, 1);
+		    // Get centroid
+		    double x = centroids.at<double>(i, 0);
+		    double y = centroids.at<double>(i, 1);
 
-		    geometry_msgs::PoseStamped newGoal;
-		    newGoal.header.frame_id = "map";  
-		    newGoal.header.stamp = ros::Time::now();
-		    
+		    // Get depth at the centroid
+		    if (depthInit && intrinsicParamInit) {
+		        int x_int = static_cast<int>(std::round(x));
+		        int y_int = static_cast<int>(std::round(y));
+		        float depth = latest_depth_image.at<float>(y_int, x_int); // Depth at pixel (y, x)
 
-		    
+		        if (depth > 0) { // Ensure valid depth
+		            // Compute 3D coordinates in the camera frame
+		            float X = (x - cx) * depth / fx;
+		            float Y = (y - cy) * depth / fy;
+		            float Z = depth;
 
-            // Draw centroid on visualization
-            cv::circle(output, cv::Point(x, y), 5, cv::Scalar(0, 255, 0), -1);
-            
-            // Create and publish centroid message
-            geometry_msgs::PointStamped centroid_msg;
-            centroid_msg.header = msg->header;
-            centroid_msg.point.x = x;
-            centroid_msg.point.y = y;
-            centroid_msg.point.z = 0.0; 
-            
-            centroids_pub_.publish(centroid_msg);
+		            geometry_msgs::PointStamped camera_point, map_point;
+		            camera_point.header.frame_id = "xtion_rgb_optical_frame";
+		            camera_point.header.stamp = ros::Time(0); // Use the latest transform
+		            camera_point.point.x = X;
+		            camera_point.point.y = Y;
+		            camera_point.point.z = Z;
 
-            // centroid information
-            ROS_INFO("Cube %d centroid: (%.2f, %.2f), Area: %d", i, x, y, area);
+		            try {
+		                // Transform the point from the camera frame to the map frame
+		                map_point = tf_buffer.transform(camera_point, "map");
 
+		                // Extract and print the real-world coordinates
+		                float real_x = map_point.point.x;
+		                float real_y = map_point.point.y;
+		                float real_z = map_point.point.z;
 
-            if (depthInit && intrinsicParamInit) {
-                int x_int = static_cast<int>(std::round(x));
-                int y_int = static_cast<int>(std::round(y));
+		                ROS_INFO("Red cube %d real-world position in map frame: [x: %f, y: %f, z: %f]",
+		                         i, real_x, real_y, real_z);
 
-                float depth = latest_depth_image.at<float> (x_int,y_int); //(y,x); 
-                ROS_INFO_STREAM("Depth of point at " << x_int <<"  " << y_int << " =  " <<  depth);
-                float X = (x - cx) * depth / fx;
-                float Y = (y - cy) * depth / fy;
-                float Z = depth;
+		                // Optionally, store the cube's position for navigation
+		                geometry_msgs::PoseStamped cube_pose;
+		                cube_pose.header.frame_id = "map";
+		                cube_pose.header.stamp = ros::Time::now();
+		                cube_pose.pose.position.x = real_x;
+		                cube_pose.pose.position.y = real_y;
+		                cube_pose.pose.position.z = real_z;
+		                cube_pose.pose.orientation.w = 1.0; // Default orientation
+		                detected_cubes.push_back(cube_pose);
 
-                geometry_msgs::PointStamped camera_point, map_point;
-                camera_point.header.frame_id = "xtion_rgb_optical_frame"; //  "camera_frame";
-                camera_point.header.stamp = ros::Time(0);//  ::now();
-                camera_point.point.x = X;
-                camera_point.point.y = Y;
-                camera_point.point.z = Z;
+		            } catch (tf2::TransformException &ex) {
+		                ROS_WARN("Transform failed for red cube %d: %s", i, ex.what());
+		            }
+		        } else {
+		            ROS_WARN("Invalid depth value for cube %d at pixel (%d, %d)", i, x_int, y_int);
+		        }
+		    }
+		}
 
-                try {
-                    //TODO the problem is that it prints the position of the camera of the robot w.r.t. map ref. frame
-                    map_point = tf_buffer.transform(camera_point, "map");
-                    ROS_INFO("Map coordinates of red centroid: [x: %f, y: %f, z: %f]",
-                            map_point.point.x, map_point.point.y, map_point.point.z);
-
-                    // newGoal definition
-                    newGoal.pose.position.x = map_point.point.x;  // Convert x appropriately
-		            newGoal.pose.position.y = map_point.point.y;  // Convert y appropriately
-		            newGoal.pose.orientation.w = 1.0;  // No rotation
-
-                    navigation_goals.push_back(newGoal); 
-
-                    
-                } catch (tf2::TransformException &ex) {
-                    ROS_WARN("Transform failed of red centroid: %s", ex.what());
-                }
-            }
-		int closestTagId = findClosestTagId(x, y); 
-        ROS_INFO("Cube %d with Tag ID %d: Centroid: (%.2f, %.2f), Area: %d", i, closestTagId, x, y, area);
-
-        }
-
-        // Publish the visualization
-        sensor_msgs::ImagePtr vis_msg = 
-            cv_bridge::CvImage(msg->header, "bgr8", output).toImageMsg();
-        mask_pub.publish(vis_msg);
-    }
-
-
+		// Publish the red mask for visualization
+		sensor_msgs::ImagePtr vis_msg = cv_bridge::CvImage(msg->header, "bgr8", red_mask).toImageMsg();
+		mask_pub.publish(vis_msg);
+	}
 
 
 
